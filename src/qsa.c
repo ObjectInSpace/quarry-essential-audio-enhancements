@@ -36,7 +36,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#define QSA_VERSION "1.2.0"
+#define QSA_VERSION "1.1.0"
 
 static HMODULE g_self, g_game;
 static WCHAR g_dir[MAX_PATH];
