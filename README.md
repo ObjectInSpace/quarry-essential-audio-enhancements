@@ -16,10 +16,8 @@ Windows Sonic is switched on. With this mod:
 - **On plain stereo headphones or speakers,** nothing changes unless you ask
   for headphone panning.
 
-It was made with blind and low-vision players in mind: hearing where a sound
-comes from — in front, beside or behind — matters a great deal when you
-cannot see the screen. It works alongside UE4SS and the QuarryAccess
-accessibility mod.
+It also offers mono output and a choice of output device, and it works
+alongside other mods, including UE4SS-based ones.
 
 ## Requirements
 
@@ -65,7 +63,7 @@ There are three settings.
   the game's sound engine set to headphone panning.
 - `mono` — the game mixes everything to one channel, played on both sides, so
   no sound is lost to one ear. Unlike Windows' own Mono audio setting, it
-  affects only the game, not your screen reader or other programs.
+  affects only the game, not other programs.
 
 Before using a layout it has made up (`7.1`, `5.1`, `quad` or `stereo`), the
 mod asks Windows whether it accepts that layout on your device. If Windows says
@@ -81,8 +79,9 @@ so the difference is subtle.
 
 `Device=` sets which output the game plays on. Leave it empty for the Windows
 default. Otherwise write part of the device's name, for example `iD4` or
-`Headphones`; capitals do not matter. This lets you keep the game and your
-screen reader on different devices. If no device matches, the log lists the
+`Headphones`; capitals do not matter. This lets you keep the game on a
+different device from other programs, such as voice chat or music. If no
+device matches, the log lists the
 names of the available devices. The game may start on the default device for
 a moment before it switches.
 
