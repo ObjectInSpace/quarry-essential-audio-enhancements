@@ -41,19 +41,34 @@ accessibility mod.
 
 ## Settings
 
-Open `QuarrySpatial.ini` in a text editor and set `Output=` to one of:
+Open `QuarrySpatial.ini` in a text editor. Restart the game after changing it.
+
+`Output=` sets what the game sends to Windows:
 
 - `auto` (the default) — spatial sound if it is switched on in Windows;
-  otherwise surround if Windows mixes your device wider than its hardware;
+  otherwise surround if there is a surround layout to use (see `Speakers=`);
   otherwise the game's own output.
 - `spatial` — Windows spatial sound. Falls back to surround if spatial sound
   is off.
-- `surround` — the channel layout Windows mixes your device at, usually 7.1.
+- `surround` — a surround channel layout (see `Speakers=`).
 - `stereo` — stereo, even on a surround device.
 - `headphones` — spatial sound if it is switched on; otherwise stereo with the
   game's sound engine set to headphone panning.
 
-Restart the game after changing it.
+`Speakers=` sets the channel layout used for surround, and as the fallback if
+spatial sound fails. Spatial sound itself does not use it; Windows places
+those sounds.
+
+- `auto` (the default) — the layout Windows mixes your device at, when that is
+  wider than what the device reports as its hardware. With Atmos or Sonic on,
+  that is 7.1.
+- `stereo`, `quad`, `5.1` or `7.1` — use this layout. Set it if your speakers
+  are not detected correctly. `5.1` means front left and right, centre, LFE and
+  two side speakers, as most receivers use.
+
+Before using a layout you set, the mod asks Windows whether it accepts that
+layout on your device. If Windows says no, the mod says so in the log and uses
+`auto` instead, so a wrong setting cannot leave the game silent.
 
 ## Checking that it works
 
@@ -127,7 +142,8 @@ The tests stand in for the game: the test program exports stand-ins for the
 Wwise functions under the game's names, and checks the pass-through, every
 output decision, the byte check before the spatial patch (including refusing
 a one-byte difference), that only the game's own device-format reads are
-changed, and the headphone panning call.
+changed, a speaker layout set by hand (both accepted and refused by Windows),
+and the headphone panning call.
 
 ## License
 

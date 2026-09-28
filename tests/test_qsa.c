@@ -11,13 +11,16 @@
 #include <initguid.h>
 #include <windows.h>
 #include <mmdeviceapi.h>
+#include <audioclient.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 
 typedef enum { REQ_AUTO, REQ_SPATIAL, REQ_SURROUND, REQ_STEREO, REQ_HEADPHONES } request_t;
-typedef struct { BOOL open_gate; int report_channels; BOOL headphone_pan; const char *name; } plan_t;
-typedef plan_t (*pfn_decide)(request_t, BOOL, int, int);
+typedef struct { BOOL open_gate; int report_channels; DWORD report_mask; BOOL headphone_pan; const char *name; } plan_t;
+typedef struct { int ch; DWORD mask; const char *name; } layout_t;
+typedef plan_t (*pfn_decide)(request_t, BOOL, int, int, layout_t);
+static const layout_t AUTO = { 0, 0, "auto" }, L51 = { 6, 0x60f, "5.1" }, L71 = { 8, 0x63f, "7.1" };
 typedef int (*pfn_gate)(BYTE *);
 typedef BOOL (*pfn_wait)(DWORD);
 typedef HRESULT (WINAPI *pfn_x3dinit)(UINT32, float, BYTE *);
@@ -81,10 +84,13 @@ int main(int argc, char **argv)
     char ini[MAX_PATH];
     snprintf(ini, sizeof ini, "%sQuarrySpatial.ini", dir);
     FILE *f = fopen(ini, "w");
-    fprintf(f, "[Audio]\nOutput=%s\n", mode);
+    if (!strcmp(mode, "surround51") || !strcmp(mode, "surround51refused"))
+        fprintf(f, "[Audio]\nOutput=surround\nSpeakers=5.1\n");
+    else fprintf(f, "[Audio]\nOutput=%s\n", mode);
     fclose(f);
     SetEnvironmentVariableA("QSA_TEST_TARGET71", "1");
     if (!strcmp(mode, "headphones")) SetEnvironmentVariableA("QSA_TEST_NOSPATIAL", "1");
+    if (!strcmp(mode, "surround51refused")) SetEnvironmentVariableA("QSA_TEST_REFUSE", "1");
 
     HMODULE m = LoadLibraryA(dll);
     if (!m) { printf("FAIL: cannot load %s\n", dll); return 1; }
@@ -114,26 +120,36 @@ int main(int argc, char **argv)
     printf("decisions\n");
     {
         plan_t p;
-        p = decide(REQ_AUTO, TRUE, 8, 2);
-        CHECK(p.open_gate && p.report_channels == 8 && !p.headphone_pan, "auto, spatial on, 8>2: spatial with 7.1 fallback");
-        p = decide(REQ_AUTO, FALSE, 8, 2);
-        CHECK(!p.open_gate && p.report_channels == 8, "auto, spatial off, 8>2: surround");
-        p = decide(REQ_AUTO, FALSE, 2, 2);
+        p = decide(REQ_AUTO, TRUE, 8, 2, AUTO);
+        CHECK(p.open_gate && p.report_channels == 8 && !p.report_mask && !p.headphone_pan, "auto, spatial on, 8>2: spatial with 7.1 fallback");
+        p = decide(REQ_AUTO, FALSE, 8, 2, AUTO);
+        CHECK(!p.open_gate && p.report_channels == 8 && !p.report_mask, "auto, spatial off, 8>2: surround at the mix format");
+        p = decide(REQ_AUTO, FALSE, 2, 2, AUTO);
         CHECK(!p.open_gate && p.report_channels == 0, "auto, plain stereo device: unchanged");
-        p = decide(REQ_AUTO, FALSE, 8, 8);
+        p = decide(REQ_AUTO, FALSE, 8, 8, AUTO);
         CHECK(!p.open_gate && p.report_channels == 0, "auto, real 7.1 device: unchanged (already 7.1)");
-        p = decide(REQ_SPATIAL, FALSE, 8, 2);
+        p = decide(REQ_SPATIAL, FALSE, 8, 2, AUTO);
         CHECK(!p.open_gate && p.report_channels == 8, "spatial requested but off: surround instead");
-        p = decide(REQ_SURROUND, TRUE, 8, 2);
+        p = decide(REQ_SURROUND, TRUE, 8, 2, AUTO);
         CHECK(!p.open_gate && p.report_channels == 8, "surround requested with spatial on: surround only");
-        p = decide(REQ_STEREO, TRUE, 8, 8);
-        CHECK(!p.open_gate && p.report_channels == 2, "stereo on a 7.1 device: report 2 channels");
-        p = decide(REQ_STEREO, TRUE, 8, 2);
+        p = decide(REQ_STEREO, TRUE, 8, 8, AUTO);
+        CHECK(!p.open_gate && p.report_channels == 2 && p.report_mask == 0x3, "stereo on a 7.1 device: report 2 channels");
+        p = decide(REQ_STEREO, TRUE, 8, 2, AUTO);
         CHECK(!p.open_gate && p.report_channels == 0, "stereo on a stereo device: unchanged");
-        p = decide(REQ_HEADPHONES, TRUE, 8, 2);
+        p = decide(REQ_HEADPHONES, TRUE, 8, 2, AUTO);
         CHECK(p.open_gate && !p.headphone_pan, "headphones with spatial on: spatial");
-        p = decide(REQ_HEADPHONES, FALSE, 2, 2);
+        p = decide(REQ_HEADPHONES, FALSE, 2, 2, AUTO);
         CHECK(!p.open_gate && p.headphone_pan && p.report_channels == 0, "headphones, spatial off: stereo + headphone panning");
+        p = decide(REQ_SURROUND, FALSE, 2, 2, L51);
+        CHECK(p.report_channels == 6 && p.report_mask == 0x60f, "Speakers=5.1 on a device that looks stereo: 5.1");
+        p = decide(REQ_SURROUND, FALSE, 8, 2, L51);
+        CHECK(p.report_channels == 6 && p.report_mask == 0x60f, "Speakers=5.1 wins over a 7.1 mix");
+        p = decide(REQ_AUTO, FALSE, 8, 8, L71);
+        CHECK(p.report_channels == 0, "Speakers=7.1 on real 7.1 hardware: nothing to change");
+        p = decide(REQ_AUTO, TRUE, 8, 2, L51);
+        CHECK(p.open_gate && p.report_channels == 6 && p.report_mask == 0x60f, "spatial on with Speakers=5.1: spatial, 5.1 fallback");
+        p = decide(REQ_STEREO, FALSE, 8, 8, L51);
+        CHECK(p.report_channels == 2 && p.report_mask == 0x3, "Output=stereo ignores Speakers");
     }
 
     printf("patch verification\n");
@@ -185,6 +201,42 @@ int main(int argc, char **argv)
         fw_initialized = 1;
         CHECK(wait_log(dir, "Wwise is mixing to: 7.1.", 3000), "Wwise's layout read back and logged as 7.1");
         CHECK(fw_setpan_calls == 0, "panning left alone");
+    } else if (!strcmp(mode, "surround51")) {
+        printf("surround with Speakers=5.1\n");
+        /* Ask Windows the same question the mod asks, then hold the mod to the answer. */
+        IAudioClient *ac = NULL;
+        WAVEFORMATEX *mix = NULL, *closest = NULL;
+        IMMDevice_Activate(dev, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&ac);
+        WAVEFORMATEXTENSIBLE x;
+        memset(&x, 0, sizeof x);
+        x.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+        x.Format.nChannels = 6;
+        x.Format.nSamplesPerSec = 48000;   /* the test's synthetic mix rate */
+        x.Format.wBitsPerSample = 32;
+        x.Format.nBlockAlign = 24;
+        x.Format.nAvgBytesPerSec = 48000 * 24;
+        x.Format.cbSize = 22;
+        x.Samples.wValidBitsPerSample = 32;
+        x.dwChannelMask = 0x60f;
+        x.SubFormat = (GUID){ WAVE_FORMAT_IEEE_FLOAT, 0, 0x10, { 0x80,0,0,0xaa,0,0x38,0x9b,0x71 } };
+        BOOL accepted = ac && IAudioClient_IsFormatSupported(ac, AUDCLNT_SHAREMODE_SHARED, &x.Format, &closest) == S_OK;
+        if (closest) CoTaskMemFree(closest);
+        if (mix) CoTaskMemFree(mix);
+        if (ac) IAudioClient_Release(ac);
+        int direct = devfmt_channels(dev);
+        printf("  (Windows %s 5.1 on this device)\n", accepted ? "accepts" : "refuses");
+        if (accepted)
+            CHECK(direct == 6 && log_has(dir, "Chosen: surround (the speaker layout set in QuarrySpatial.ini)."),
+                  "accepted: the game is told 5.1 (got %d)", direct);
+        else
+            CHECK(direct == 8 && log_has(dir, "Windows does not accept 5.1 on this device"),
+                  "refused: logged, automatic 7.1 used instead (got %d)", direct);
+    } else if (!strcmp(mode, "surround51refused")) {
+        printf("surround with Speakers=5.1, Windows refusal simulated\n");
+        int direct = devfmt_channels(dev);
+        CHECK(direct == 8 && log_has(dir, "Windows does not accept 5.1 on this device") &&
+              log_has(dir, "Chosen: surround (the channel layout Windows mixes at)."),
+              "refused: logged, automatic 7.1 used instead (got %d)", direct);
     } else if (!strcmp(mode, "headphones")) {
         printf("headphones (spatial simulated off)\n");
         CHECK(log_has(dir, "Chosen: stereo with headphone panning."), "chose stereo with headphone panning");

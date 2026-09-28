@@ -72,56 +72,82 @@ typedef enum { REQ_AUTO, REQ_SPATIAL, REQ_SURROUND, REQ_STEREO, REQ_HEADPHONES }
 typedef struct {
     BOOL open_gate;        /* let Wwise use Windows spatial sound */
     int report_channels;   /* 0 = leave the device format alone; else report this many */
+    DWORD report_mask;     /* speaker mask to report; 0 = Windows' own mix format */
     BOOL headphone_pan;    /* Wwise's headphone panning rule */
     const char *name;
 } plan_t;
 
-/* Pure function: exported for the tests. */
-__declspec(dllexport) plan_t qsa_decide(request_t req, BOOL spatial_on, int mix_ch, int hw_ch)
+/* A speaker layout chosen in the ini; ch == 0 means automatic. */
+typedef struct { int ch; DWORD mask; const char *name; } layout_t;
+
+/* Pure function: exported for the tests. forced = the Speakers= setting.
+ * The channel layout used for surround, and as the fallback in spatial mode,
+ * is the forced one if set, otherwise the one Windows mixes at when that is
+ * wider than the hardware. */
+__declspec(dllexport) plan_t qsa_decide(request_t req, BOOL spatial_on, int mix_ch, int hw_ch, layout_t forced)
 {
-    plan_t p = { FALSE, 0, FALSE, "unchanged (the game's own output)" };
-    BOOL wider = mix_ch > hw_ch;
+    plan_t p = { FALSE, 0, 0, FALSE, "unchanged (the game's own output)" };
+    int sur_ch = 0;
+    DWORD sur_mask = 0;
+    if (forced.ch) {
+        if (forced.ch != hw_ch) { sur_ch = forced.ch; sur_mask = forced.mask; }
+    } else if (mix_ch > hw_ch) {
+        sur_ch = mix_ch;
+    }
     switch (req) {
     case REQ_SPATIAL:
     case REQ_AUTO:
         if (spatial_on) {
             p.open_gate = TRUE;
-            p.report_channels = wider ? mix_ch : 0;   /* the fallback if Wwise's spatial setup fails */
+            p.report_channels = sur_ch;   /* the fallback if Wwise's spatial setup fails */
+            p.report_mask = sur_mask;
             p.name = "spatial (Windows spatial sound: 7.1.4 plus positioned objects)";
-        } else if (wider) {
-            p.report_channels = mix_ch;
-            p.name = "surround (the channel layout Windows mixes at)";
+        } else if (sur_ch) {
+            p.report_channels = sur_ch;
+            p.report_mask = sur_mask;
+            p.name = forced.ch ? "surround (the speaker layout set in QuarrySpatial.ini)"
+                               : "surround (the channel layout Windows mixes at)";
         }
         break;
     case REQ_SURROUND:
-        if (wider) {
-            p.report_channels = mix_ch;
-            p.name = "surround (the channel layout Windows mixes at)";
+        if (sur_ch) {
+            p.report_channels = sur_ch;
+            p.report_mask = sur_mask;
+            p.name = forced.ch ? "surround (the speaker layout set in QuarrySpatial.ini)"
+                               : "surround (the channel layout Windows mixes at)";
         }
         break;
     case REQ_HEADPHONES:
         if (spatial_on) {
             p.open_gate = TRUE;
-            p.report_channels = wider ? mix_ch : 0;
+            p.report_channels = sur_ch;
+            p.report_mask = sur_mask;
             p.name = "spatial (Windows spatial sound: 7.1.4 plus positioned objects)";
         } else {
             p.report_channels = hw_ch != 2 ? 2 : 0;
+            p.report_mask = 0x3;
             p.headphone_pan = TRUE;
             p.name = "stereo with headphone panning";
         }
         break;
     case REQ_STEREO:
         p.report_channels = hw_ch != 2 ? 2 : 0;
+        p.report_mask = 0x3;
         p.name = "stereo";
         break;
     }
     return p;
 }
 
+static void ini_path(WCHAR *path)
+{
+    _snwprintf(path, MAX_PATH, L"%lsQuarrySpatial.ini", g_dir);
+}
+
 static request_t read_request(char *raw, size_t n)
 {
     WCHAR path[MAX_PATH], v[32];
-    _snwprintf(path, MAX_PATH, L"%lsQuarrySpatial.ini", g_dir);
+    ini_path(path);
     GetPrivateProfileStringW(L"Audio", L"Output", L"auto", v, 32, path);
     WideCharToMultiByte(CP_UTF8, 0, v, -1, raw, (int)n, NULL, NULL);
     if (!_wcsicmp(v, L"spatial")) return REQ_SPATIAL;
@@ -129,6 +155,26 @@ static request_t read_request(char *raw, size_t n)
     if (!_wcsicmp(v, L"stereo")) return REQ_STEREO;
     if (!_wcsicmp(v, L"headphones")) return REQ_HEADPHONES;
     return REQ_AUTO;
+}
+
+/* Masks as Windows names them: 5.1 with side speakers is what receivers and
+ * Wwise's own 5.1 use. */
+static layout_t read_speakers(char *raw, size_t n)
+{
+    static const layout_t known[] = {
+        { 2, 0x3, "stereo" }, { 4, 0x33, "quad" }, { 6, 0x60f, "5.1" }, { 8, 0x63f, "7.1" },
+    };
+    WCHAR path[MAX_PATH], v[32];
+    ini_path(path);
+    GetPrivateProfileStringW(L"Audio", L"Speakers", L"auto", v, 32, path);
+    WideCharToMultiByte(CP_UTF8, 0, v, -1, raw, (int)n, NULL, NULL);
+    for (size_t i = 0; i < sizeof known / sizeof known[0]; i++) {
+        WCHAR w[16];
+        MultiByteToWideChar(CP_UTF8, 0, known[i].name, -1, w, 16);
+        if (!_wcsicmp(v, w)) return known[i];
+    }
+    layout_t a = { 0, 0, "auto" };
+    return a;
 }
 
 /* ---- vtable patching ---- */
@@ -261,28 +307,29 @@ static void synthetic_71(WAVEFORMATEXTENSIBLE *x)
     x->SubFormat = (GUID){ WAVE_FORMAT_IEEE_FLOAT, 0, 0x10, { 0x80,0,0,0xaa,0,0x38,0x9b,0x71 } };
 }
 
-/* Turns a mix format into the one to report with `ch` channels (stereo is
- * the only narrowing case). */
-static BOOL build_report(const WAVEFORMATEX *mix, int ch)
+/* The format to report: Windows' own mix format when that is the layout
+ * wanted (mask 0 and the same channel count), otherwise 32-bit float at the
+ * mix rate with the given speaker mask. */
+static BOOL build_report(const WAVEFORMATEX *mix, int ch, DWORD mask)
 {
     if (!mix || ch <= 0) return FALSE;
-    if (ch == mix->nChannels) {
+    if (!mask && ch == mix->nChannels) {
         size_t sz = sizeof(WAVEFORMATEX) + mix->cbSize;
         if (sz > sizeof g_report) return FALSE;
         memcpy(&g_report, mix, sz);
         return TRUE;
     }
-    if (ch != 2) return FALSE;
+    if (!mask) return FALSE;
     memset(&g_report, 0, sizeof g_report);
     g_report.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-    g_report.Format.nChannels = 2;
+    g_report.Format.nChannels = (WORD)ch;
     g_report.Format.nSamplesPerSec = mix->nSamplesPerSec;
     g_report.Format.wBitsPerSample = 32;
-    g_report.Format.nBlockAlign = 8;
-    g_report.Format.nAvgBytesPerSec = mix->nSamplesPerSec * 8;
+    g_report.Format.nBlockAlign = (WORD)(ch * 4);
+    g_report.Format.nAvgBytesPerSec = mix->nSamplesPerSec * ch * 4;
     g_report.Format.cbSize = 22;
     g_report.Samples.wValidBitsPerSample = 32;
-    g_report.dwChannelMask = 0x3;
+    g_report.dwChannelMask = mask;
     g_report.SubFormat = (GUID){ WAVE_FORMAT_IEEE_FLOAT, 0, 0x10, { 0x80,0,0,0xaa,0,0x38,0x9b,0x71 } };
     return TRUE;
 }
@@ -383,10 +430,14 @@ static volatile LONG g_setup_done;
 
 static void worker_body(void)
 {
-    plan_t p = { FALSE, 0, FALSE, "unchanged" };
-    char raw[32];
+    plan_t p = { FALSE, 0, 0, FALSE, "unchanged" };
+    char raw[32], rawsp[32];
     request_t req = read_request(raw, sizeof raw);
-    qlog("Quarry Spatial Audio %s. Requested output: %s.", QSA_VERSION, raw);
+    layout_t forced = read_speakers(rawsp, sizeof rawsp);
+    qlog("Quarry Spatial Audio %s. Requested output: %s. Speakers: %s.", QSA_VERSION, raw,
+         forced.ch ? forced.name : rawsp);
+    if (!forced.ch && _stricmp(rawsp, "auto"))
+        qlog("Unknown Speakers value; using auto. Choices: auto, stereo, quad, 5.1, 7.1.");
 
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) { qlog("Could not start COM; doing nothing."); return; }
@@ -430,13 +481,28 @@ static void worker_body(void)
     qlog("Device: hardware %d channels, Windows mixes at %d, Windows spatial sound %s.", hw_ch, mix_ch,
          maxdyn ? "on" : "off");
 
-    p = qsa_decide(req, maxdyn > 0, mix_ch, hw_ch);
+    p = qsa_decide(req, maxdyn > 0, mix_ch, hw_ch, forced);
+    /* A layout set by hand is used only if Windows accepts it on this device
+     * -- Wwise asks the same question, and a refused format could leave the
+     * game silent. */
+    if (forced.ch && p.report_mask == forced.mask && p.report_channels == forced.ch && ac && mix) {
+        WAVEFORMATEX *closest = NULL;
+        BOOL refuse_for_test = GetEnvironmentVariableW(L"QSA_TEST_REFUSE", NULL, 0) > 0;
+        if (build_report(mix, forced.ch, forced.mask) &&
+            (refuse_for_test ||
+             IAudioClient_IsFormatSupported(ac, AUDCLNT_SHAREMODE_SHARED, &g_report.Format, &closest) != S_OK)) {
+            qlog("Windows does not accept %s on this device; using the automatic layout.", forced.name);
+            layout_t none = { 0, 0, "auto" };
+            p = qsa_decide(req, maxdyn > 0, mix_ch, hw_ch, none);
+        }
+        if (closest) CoTaskMemFree(closest);
+    }
     qlog("Chosen: %s.", p.name);
     if (req == REQ_SPATIAL && !p.open_gate) qlog("Spatial was requested but Windows spatial sound is off.");
     if (req == REQ_SURROUND && !p.report_channels)
         qlog("Surround was requested but Windows does not mix this device wider than its hardware.");
 
-    if (p.report_channels && hw_ch && build_report(mix, p.report_channels)) {
+    if (p.report_channels && hw_ch && build_report(mix, p.report_channels, p.report_mask)) {
         g_have_report = TRUE;
         if (!patch_slot(dev, 4, (void *)det_dev_openps) || (ps && !patch_slot(ps, 5, (void *)det_ps_getvalue)))
             qlog("Could not attach to the audio device; the channel layout will not change.");
