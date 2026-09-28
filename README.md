@@ -79,6 +79,22 @@ screen reader on different devices. If no device matches, the log lists the
 names of the available devices. The game may start on the default device for
 a moment before it switches.
 
+## Headphones without Dolby Atmos
+
+You do not need Dolby Atmos to hear the game in 3D on ordinary headphones.
+
+- **Windows Sonic for Headphones** is free and built into Windows 10 and 11.
+  Switch it on for your headphones (Settings, System, Sound, your device,
+  Spatial sound) and leave `Output=auto`. The game then sends Windows its
+  positioned sounds and a 7.1.4 mix, and Sonic renders them for headphones.
+- **If you prefer a different sound**, HeSuVi (a free add-on for Equalizer APO)
+  turns a 7.1 channel mix into headphone sound with a choice of dozens of
+  virtualisations. Set it up following HeSuVi's own guide, so that Windows
+  mixes your device at 7.1, and leave Windows spatial sound off. With
+  `Output=auto` the mod then gives the game that 7.1 layout; `Output=7.1` does
+  the same explicitly. This uses channels rather than positioned sounds, so
+  it is less precise than Sonic or Atmos, but lets you pick the rendering.
+
 ## Checking that it works
 
 Each time the game starts, the mod writes `QuarrySpatial.log` next to the DLL.
