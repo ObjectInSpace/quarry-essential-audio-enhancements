@@ -20,7 +20,7 @@ if ($Test) {
     if ($LASTEXITCODE) { throw "helper build failed" }
     $failed = 0
     Push-Location $root
-    foreach ($mode in 'auto', 'layout51', 'layout51no', 'mono', 'headphones', 'spatial', 'device', 'nodevice') {
+    foreach ($mode in 'auto', 'layout51', 'layout51no', 'mono', 'headphones', 'spatial', 'device', 'nodevice', 'nocomp') {
         & "$root\build\test_qsa.exe" "$root\build\X3DAudio1_7.dll" $mode
         if ($LASTEXITCODE) { $failed++ }
     }

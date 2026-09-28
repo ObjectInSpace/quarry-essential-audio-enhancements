@@ -36,7 +36,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#define QSA_VERSION "1.0.0"
+#define QSA_VERSION "1.1.0"
 
 static HMODULE g_self, g_game;
 static WCHAR g_dir[MAX_PATH];
@@ -154,6 +154,18 @@ static request_t read_request(char *raw, size_t n, layout_t *layout)
     if (_wcsicmp(v, L"auto"))
         qlog("Unknown Output value; using auto. Choices: auto, spatial, 7.1, 5.1, quad, stereo, headphones, mono.");
     return REQ_AUTO;
+}
+
+/* Compression=on (the game as designed) or off. */
+static BOOL read_compression_off(char *raw, size_t n)
+{
+    WCHAR path[MAX_PATH], v[16];
+    ini_path(path);
+    GetPrivateProfileStringW(L"Audio", L"Compression", L"on", v, 16, path);
+    WideCharToMultiByte(CP_UTF8, 0, v, -1, raw, (int)n, NULL, NULL);
+    if (!_wcsicmp(v, L"off")) return TRUE;
+    if (_wcsicmp(v, L"on")) qlog("Unknown Compression value; using on. Choices: on, off.");
+    return FALSE;
 }
 
 static void read_device(WCHAR *out, int n)
@@ -378,6 +390,14 @@ typedef int (*pfn_setpan)(int, uint64_t);
  * AkChannelConfig. Shareset 0 = Wwise's standard system output. */
 typedef struct { uint32_t shareset, device_id, panning, channels; } ak_output_settings_t;
 typedef int (*pfn_replaceout)(const ak_output_settings_t *, uint64_t, uint64_t *);
+/* SetBusEffect(bus id, effect slot, effect shareset id; 0 = empty the slot). */
+typedef int (*pfn_setbusfx)(uint32_t, uint32_t, uint32_t);
+/* From the game's Init.bnk: the Master Audio Bus (the last stage of the mix)
+ * carries a Compressor in slot 0 (-20 dB, 3:1, 100 ms), a Peak Limiter in
+ * slot 1 (-1 dB brick wall) and a Meter in slot 2. Always on, not linked to
+ * any game setting. */
+#define AK_MASTER_BUS_ID      3803692087u   /* "Master Audio Bus" */
+#define MASTER_COMPRESSOR_SLOT 0u
 #define AKCFG_MONO 0x00004101u   /* 1 ch, standard, front centre */
 
 static void cfg_name(uint32_t v, char *out, size_t n)
@@ -396,9 +416,15 @@ static void cfg_name(uint32_t v, char *out, size_t n)
  * chosen, rebuild its main output (id 0) once with ReplaceOutput; set
  * headphone panning. wwise_dev = Wwise's id for the chosen device, 0 for the
  * Windows default. */
-static void wwise_followup(BOOL headphone_pan, BOOL mono, uint32_t wwise_dev)
+static void wwise_followup(BOOL headphone_pan, BOOL mono, uint32_t wwise_dev, BOOL no_compression)
 {
     BOOL replace = mono || wwise_dev;
+    pfn_setbusfx setbusfx = (pfn_setbusfx)(void *)GetProcAddress(g_game,
+        "?SetBusEffect@SoundEngine@AK@@YA?AW4AKRESULT@@III@Z");
+    if (no_compression && !setbusfx) {
+        qlog("Could not find Wwise's SetBusEffect in the game; compression stays on.");
+        no_compression = FALSE;
+    }
     pfn_replaceout replaceout = (pfn_replaceout)(void *)GetProcAddress(g_game,
         "?ReplaceOutput@SoundEngine@AK@@YA?AW4AKRESULT@@AEBUAkOutputSettings@@_KPEA_K@Z");
     pfn_isinit isinit = (pfn_isinit)(void *)GetProcAddress(g_game, "?IsInitialized@SoundEngine@AK@@YA_NXZ");
@@ -458,7 +484,19 @@ static void wwise_followup(BOOL headphone_pan, BOOL mono, uint32_t wwise_dev)
                 qlog("Could not set Wwise's headphone panning.");
             headphone_pan = FALSE;
         }
-        if (i - ready_at >= 40) break;
+        /* Compression off: empty the master bus's compressor slot; the limiter
+         * after it stays. Measured in the game: the compressor appeared 10 s
+         * after Wwise's output, and Wwise terminated it 80 ms after this
+         * request, for the rest of the session. Nothing can be read back, so
+         * the request is repeated every 2 s for the first minute, for slower
+         * machines (emptying an empty slot changes nothing). */
+        if (no_compression && (i - ready_at) % 4 == 0) {
+            int r = setbusfx(AK_MASTER_BUS_ID, MASTER_COMPRESSOR_SLOT, 0);
+            if (i == ready_at)
+                qlog(r == 1 ? "Asked Wwise to remove the master compressor (the limiter stays)."
+                            : "Wwise refused to remove the master compressor (result %d).", r);
+        }
+        if (i - ready_at >= (no_compression ? 120 : 40)) break;
     }
 }
 
@@ -537,7 +575,10 @@ static void worker_body(void)
     WCHAR want[256];
     read_device(want, 256);
     WideCharToMultiByte(CP_UTF8, 0, want, -1, devu, sizeof devu, NULL, NULL);
-    qlog("Quarry Spatial Audio %s. Output: %s. Device: %s.", QSA_VERSION, raw, want[0] ? devu : "Windows default");
+    char rawc[16];
+    BOOL no_compression = read_compression_off(rawc, sizeof rawc);
+    qlog("Quarry Spatial Audio %s. Output: %s. Device: %s. Compression: %s.", QSA_VERSION, raw,
+         want[0] ? devu : "Windows default", no_compression ? "off" : "on");
 
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) { qlog("Could not start COM; doing nothing."); return; }
@@ -654,7 +695,7 @@ out:
     if (en) IMMDeviceEnumerator_Release(en);
     InterlockedExchange(&g_setup_done, 1);
     if (dev) {
-        wwise_followup(p.headphone_pan, p.mono, wwise_dev);
+        wwise_followup(p.headphone_pan, p.mono, wwise_dev, no_compression);
         IMMDevice_Release(dev);
     }
 }

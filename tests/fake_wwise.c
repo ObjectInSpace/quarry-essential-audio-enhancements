@@ -43,6 +43,19 @@ __attribute__((noinline)) int fw_GetPanningRule(int *out, uint64_t dev)
     return 1;
 }
 
+/* SetBusEffect(AkUniqueID bus, AkUInt32 slot, AkUniqueID shareset). */
+int fw_setbusfx_calls;
+uint32_t fw_setbusfx_args[3];
+
+__attribute__((noinline)) int fw_SetBusEffect(uint32_t bus, uint32_t slot, uint32_t shareset)
+{
+    fw_setbusfx_calls++;
+    fw_setbusfx_args[0] = bus;
+    fw_setbusfx_args[1] = slot;
+    fw_setbusfx_args[2] = shareset;
+    return 1;
+}
+
 /* ReplaceOutput(const AkOutputSettings&, AkOutputDeviceID, AkOutputDeviceID*):
  * records what it was given and, like Wwise, the new layout then shows up in
  * GetSpeakerConfiguration. */

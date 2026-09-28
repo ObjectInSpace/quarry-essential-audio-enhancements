@@ -36,8 +36,8 @@ typedef int (*pfn_fwin)(IMMDevice *);
 
 static const layout_t NONE = { 0, 0, "" }, L51 = { 6, 0x60f, "5.1" }, L71 = { 8, 0x63f, "7.1" };
 
-extern int fw_initialized, fw_pan, fw_setpan_calls, fw_replace_calls, fw_getdevid_calls;
-extern uint32_t fw_speaker_cfg, fw_replace_settings[4];
+extern int fw_initialized, fw_pan, fw_setpan_calls, fw_replace_calls, fw_getdevid_calls, fw_setbusfx_calls;
+extern uint32_t fw_speaker_cfg, fw_replace_settings[4], fw_setbusfx_args[3];
 extern uint64_t fw_replace_id;
 extern WCHAR fw_getdevid_endpoint[128];
 
@@ -149,13 +149,15 @@ int main(int argc, char **argv)
     snprintf(ini, sizeof ini, "%sQuarrySpatial.ini", dir);
     FILE *f = fopen(ini, "w");
     const char *out = !strcmp(mode, "layout51") || !strcmp(mode, "layout51no") ? "5.1"
-                    : !strcmp(mode, "device") || !strcmp(mode, "nodevice") ? "auto" : mode;
+                    : !strcmp(mode, "device") || !strcmp(mode, "nodevice") || !strcmp(mode, "nocomp") ? "auto" : mode;
     fprintf(f, "[Audio]\nOutput=%s\n", out);
+    if (!strcmp(mode, "nocomp")) fprintf(f, "Compression=off\n");
     if (!strcmp(mode, "device")) fprintf(f, "Device=%s\n", other_name);
     if (!strcmp(mode, "nodevice")) fprintf(f, "Device=zz no such device zz\n");
     fclose(f);
     SetEnvironmentVariableA("QSA_TEST_TARGET71", "1");
-    if (!strcmp(mode, "auto") || !strcmp(mode, "headphones") || !strcmp(mode, "device") || !strcmp(mode, "nodevice"))
+    if (!strcmp(mode, "auto") || !strcmp(mode, "headphones") || !strcmp(mode, "device") || !strcmp(mode, "nodevice") ||
+        !strcmp(mode, "nocomp"))
         SetEnvironmentVariableA("QSA_TEST_NOSPATIAL", "1");
     if (!strcmp(mode, "layout51no")) SetEnvironmentVariableA("QSA_TEST_REFUSE", "1");
 
@@ -257,6 +259,18 @@ int main(int argc, char **argv)
         CHECK(wait_log(dir, "Wwise is mixing to: 7.1.", 3000), "Wwise's layout read back and logged as 7.1");
         Sleep(700);
         CHECK(!fw_replace_calls && !fw_setpan_calls, "output not rebuilt, panning left alone");
+        CHECK(!fw_setbusfx_calls && log_has(dir, "Compression: on."), "compression left on by default");
+    } else if (!strcmp(mode, "nocomp")) {
+        CHECK(log_has(dir, "Compression: off."), "setting read");
+        CHECK(!fw_setbusfx_calls, "nothing sent before Wwise is running");
+        fw_initialized = 1;
+        CHECK(wait_log(dir, "Asked Wwise to remove the master compressor (the limiter stays).", 3000) &&
+              fw_setbusfx_args[0] == 3803692087u && fw_setbusfx_args[1] == 0 && fw_setbusfx_args[2] == 0,
+              "SetBusEffect(%u, slot %u, %u): Master Audio Bus, compressor slot emptied",
+              fw_setbusfx_args[0], fw_setbusfx_args[1], fw_setbusfx_args[2]);
+        Sleep(2600);
+        CHECK(fw_setbusfx_calls >= 2 && fw_setbusfx_args[1] == 0, "repeated while the bank loads (%d calls), always slot 0",
+              fw_setbusfx_calls);
     } else if (!strcmp(mode, "layout51")) {
         IAudioClient *ac = NULL;
         WAVEFORMATEX *closest = NULL;

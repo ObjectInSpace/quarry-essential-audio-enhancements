@@ -43,7 +43,7 @@ accessibility mod.
 
 Open `QuarrySpatial.ini` in a text editor. Restart the game after changing it.
 
-There are two settings.
+There are three settings.
 
 `Output=` sets how the game's sound is laid out:
 
@@ -71,6 +71,13 @@ Before using a layout it has made up (`7.1`, `5.1`, `quad` or `stereo`), the
 mod asks Windows whether it accepts that layout on your device. If Windows says
 no, the mod says so in the log and uses the next best choice, so a wrong
 setting cannot leave the game silent.
+
+`Compression=` is `on` (the default) or `off`. The game runs its whole mix
+through a compressor on the way out (3:1 above −20 dB), which narrows the
+difference between loud and quiet moments. `off` removes it, for the game's
+full dynamic range. The limiter after it, which stops clipping, stays, and
+dialogue keeps its own separate levelling. The game's compression is gentle,
+so the difference is subtle.
 
 `Device=` sets which output the game plays on. Leave it empty for the Windows
 default. Otherwise write part of the device's name, for example `iD4` or
@@ -156,6 +163,11 @@ For modders and the curious.
   exported `AK::GetDeviceID`, moves the output to the chosen device. The
   widened format is only given for that device: the mod checks the device's
   endpoint id inside the property read.
+- **Compression.** The game's startup sound bank puts a Compressor, a Peak
+  Limiter and a Meter on the Master Audio Bus, always on. `Compression=off`
+  calls Wwise's exported `SetBusEffect` to empty the compressor's slot on that
+  bus. Measured in the game, Wwise terminates the compressor within 80 ms of
+  the request, and it stays gone for the session.
 - **Reading the result back.** The game exports Wwise's API by name; the mod
   calls `GetSpeakerConfiguration` to log what Wwise is actually mixing to,
   and `SetPanningRule` for the headphones option.
@@ -173,8 +185,9 @@ Wwise functions under the game's names, and checks the pass-through, every
 output decision, the byte check before the spatial patch (including refusing
 a one-byte difference), that only the game's own device-format reads are
 changed, a speaker layout set by hand (both accepted and refused by Windows),
-mono, headphone panning, and the device choice (using another active output
-on the test machine, and a name that matches nothing).
+mono, headphone panning, the device choice (using another active output on
+the test machine, and a name that matches nothing), and removing the master
+compressor.
 
 ## License
 

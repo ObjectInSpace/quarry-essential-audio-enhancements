@@ -1,4 +1,5 @@
 EXPORTS
+    "?SetBusEffect@SoundEngine@AK@@YA?AW4AKRESULT@@III@Z" = fw_SetBusEffect
     "?GetDeviceID@AK@@YAIPEAUIMMDevice@@@Z" = fw_GetDeviceID
     "?IsInitialized@SoundEngine@AK@@YA_NXZ" = fw_IsInitialized
     "?GetSpeakerConfiguration@SoundEngine@AK@@YA?AUAkChannelConfig@@_K@Z" = fw_GetSpeakerConfiguration
