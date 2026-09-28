@@ -116,9 +116,6 @@ happens in memory while the game runs.
 
 ## Known issues
 
-- On the test machine the game shows a "has crashed and will close" message
-  when quitting. It happens with this mod removed too, so it is not caused by
-  it; it is in the game's own shutdown code.
 - The mod reads the audio device when the game starts. If you change your
   default output device or its spatial sound setting, restart the game.
 - A game update may change the code the spatial switch depends on. The mod
