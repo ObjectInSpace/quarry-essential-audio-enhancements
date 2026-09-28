@@ -192,3 +192,8 @@ compressor.
 ## License
 
 GPL-3.0-or-later. See `LICENSE`.
+
+This is an unofficial, fan-made mod. It is not affiliated with, endorsed by or
+supported by Supermassive Games, 2K or Microsoft. The Quarry is a trademark of
+its respective owners. The mod contains no code or content from the game or
+from Microsoft; use it at your own risk.
