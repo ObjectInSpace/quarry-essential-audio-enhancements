@@ -1,20 +1,34 @@
 # Essential Audio Enhancements for The Quarry
 
-A mod for **The Quarry** (PC, Steam) that makes the game output **surround
-sound** and **Windows spatial sound** — Dolby Atmos for Headphones, Windows
-Sonic and other spatial audio formats — instead of plain stereo.
+A mod for **The Quarry** (PC, Steam) that lets the game use **Windows spatial
+sound** — Dolby Atmos (for headphones or home theater), Windows Sonic and
+DTS — and **surround sound** on devices where it otherwise outputs stereo.
 
-Out of the box, The Quarry on PC only outputs stereo, even when Dolby Atmos or
-Windows Sonic is switched on. With this mod:
+What the game does on its own:
+
+- It never uses Windows spatial sound: no individually positioned sounds and
+  no height channels, on any device. Its sound engine supports it, but the
+  game ships with it switched off.
+- On devices that report stereo hardware — most headphones, headsets and USB
+  audio interfaces — it outputs stereo, even when Dolby Atmos or Windows
+  Sonic is switched on. (Measured.)
+- On devices that report surround hardware, such as a receiver connected by
+  HDMI and set up as 5.1 or 7.1, it very likely outputs channel surround
+  already, because its sound engine follows the device's hardware layout.
+  (Not tested with such a device.)
+
+With this mod:
 
 - **With spatial sound switched on in Windows,** the game sends Windows a 7.1.4
   mix (the usual seven speakers plus four overhead) and individually
-  positioned sounds, so Atmos or Sonic can place each sound around you,
-  including behind you and above you.
-- **With surround speakers,** or when Windows mixes your device wider than its
-  hardware, the game outputs full surround and pans sounds into it.
+  positioned sounds, so Atmos, Sonic or DTS can place each sound around you,
+  including behind you and above you. This is the main gain for headphone
+  users and for Atmos or DTS:X home theaters alike.
+- **When Windows mixes your device wider than its hardware** (for example 7.1
+  with Atmos or Sonic on a stereo device), the game outputs that surround
+  layout and pans sounds into it.
 - **On plain stereo headphones or speakers,** nothing changes unless you ask
-  for headphone panning.
+  for headphone panning or mono.
 
 It also offers mono output and a choice of output device, and it works
 alongside other mods, including UE4SS-based ones.
