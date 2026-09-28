@@ -1,4 +1,5 @@
 EXPORTS
+    "?GetDeviceID@AK@@YAIPEAUIMMDevice@@@Z" = fw_GetDeviceID
     "?IsInitialized@SoundEngine@AK@@YA_NXZ" = fw_IsInitialized
     "?GetSpeakerConfiguration@SoundEngine@AK@@YA?AUAkChannelConfig@@_K@Z" = fw_GetSpeakerConfiguration
     "?GetPanningRule@SoundEngine@AK@@YA?AW4AKRESULT@@AEAW4AkPanningRule@@_K@Z" = fw_GetPanningRule

@@ -30,6 +30,7 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <spatialaudioclient.h>
+#include <functiondiscoverykeys_devpkey.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -67,69 +68,50 @@ static void qlog(const char *fmt, ...)
 }
 
 /* ---- the output decision ---- */
-typedef enum { REQ_AUTO, REQ_SPATIAL, REQ_SURROUND, REQ_STEREO, REQ_HEADPHONES, REQ_MONO } request_t;
+typedef enum { REQ_AUTO, REQ_SPATIAL, REQ_LAYOUT, REQ_STEREO, REQ_HEADPHONES, REQ_MONO } request_t;
+
+/* A channel layout. 5.1 uses side speakers, as receivers and Wwise's own 5.1
+ * do. ch == 0 means none. */
+typedef struct { int ch; DWORD mask; const char *name; } layout_t;
 
 typedef struct {
     BOOL open_gate;        /* let Wwise use Windows spatial sound */
     int report_channels;   /* 0 = leave the device format alone; else report this many */
     DWORD report_mask;     /* speaker mask to report; 0 = Windows' own mix format */
     BOOL headphone_pan;    /* Wwise's headphone panning rule */
-    BOOL mono_bus;         /* Wwise mixes its master bus to one channel */
+    BOOL mono;             /* Wwise mixes to one channel */
     const char *name;
 } plan_t;
 
-/* A speaker layout chosen in the ini; ch == 0 means automatic. */
-typedef struct { int ch; DWORD mask; const char *name; } layout_t;
-
-/* Pure function: exported for the tests. forced = the Speakers= setting.
- * The channel layout used for surround, and as the fallback in spatial mode,
- * is the forced one if set, otherwise the one Windows mixes at when that is
- * wider than the hardware. */
-__declspec(dllexport) plan_t qsa_decide(request_t req, BOOL spatial_on, int mix_ch, int hw_ch, layout_t forced)
+/* Pure function: exported for the tests. `layout` is used by REQ_LAYOUT. */
+__declspec(dllexport) plan_t qsa_decide(request_t req, layout_t layout, BOOL spatial_on, int mix_ch, int hw_ch)
 {
     plan_t p = { FALSE, 0, 0, FALSE, FALSE, "unchanged (the game's own output)" };
-    int sur_ch = 0;
-    DWORD sur_mask = 0;
-    if (forced.ch) {
-        if (forced.ch != hw_ch) { sur_ch = forced.ch; sur_mask = forced.mask; }
-    } else if (mix_ch > hw_ch) {
-        sur_ch = mix_ch;
-    }
+    BOOL wider = mix_ch > hw_ch;
     switch (req) {
-    case REQ_SPATIAL:
     case REQ_AUTO:
-        if (spatial_on) {
-            p.open_gate = TRUE;
-            p.report_channels = sur_ch;   /* the fallback if Wwise's spatial setup fails */
-            p.report_mask = sur_mask;
-            p.name = "spatial (Windows spatial sound: 7.1.4 plus positioned objects)";
-        } else if (sur_ch) {
-            p.report_channels = sur_ch;
-            p.report_mask = sur_mask;
-            p.name = forced.ch ? "surround (the speaker layout set in QuarrySpatial.ini)"
-                               : "surround (the channel layout Windows mixes at)";
-        }
-        break;
-    case REQ_SURROUND:
-        if (sur_ch) {
-            p.report_channels = sur_ch;
-            p.report_mask = sur_mask;
-            p.name = forced.ch ? "surround (the speaker layout set in QuarrySpatial.ini)"
-                               : "surround (the channel layout Windows mixes at)";
-        }
-        break;
+    case REQ_SPATIAL:
     case REQ_HEADPHONES:
         if (spatial_on) {
             p.open_gate = TRUE;
-            p.report_channels = sur_ch;
-            p.report_mask = sur_mask;
-            p.name = "spatial (Windows spatial sound: 7.1.4 plus positioned objects)";
-        } else {
+            p.report_channels = wider ? mix_ch : 0;   /* the fallback if Wwise's spatial setup fails */
+            p.name = "3D spatial sound (Windows spatial sound: 7.1.4 plus positioned objects)";
+        } else if (req == REQ_HEADPHONES) {
             p.report_channels = hw_ch != 2 ? 2 : 0;
             p.report_mask = 0x3;
             p.headphone_pan = TRUE;
             p.name = "stereo with headphone panning";
+        } else if (wider) {
+            p.report_channels = mix_ch;
+            p.name = "surround (the channel layout Windows mixes at)";
         }
+        break;
+    case REQ_LAYOUT:
+        if (layout.ch && layout.ch != hw_ch) {
+            p.report_channels = layout.ch;
+            p.report_mask = layout.mask;
+        }
+        p.name = layout.name;
         break;
     case REQ_STEREO:
         p.report_channels = hw_ch != 2 ? 2 : 0;
@@ -140,7 +122,7 @@ __declspec(dllexport) plan_t qsa_decide(request_t req, BOOL spatial_on, int mix_
         /* Windows' shared mode refuses a 1-channel stream on most devices
          * (measured: all three here), so the output stays as it is and Wwise
          * mixes to one channel inside, which then plays on both sides. */
-        p.mono_bus = TRUE;
+        p.mono = TRUE;
         p.name = "mono (the game mixes to one channel, played on both sides)";
         break;
     }
@@ -152,40 +134,33 @@ static void ini_path(WCHAR *path)
     _snwprintf(path, MAX_PATH, L"%lsQuarrySpatial.ini", g_dir);
 }
 
-static request_t read_request(char *raw, size_t n)
+static request_t read_request(char *raw, size_t n, layout_t *layout)
 {
+    static const layout_t layouts[] = { { 4, 0x33, "quad" }, { 6, 0x60f, "5.1" }, { 8, 0x63f, "7.1" } };
     WCHAR path[MAX_PATH], v[32];
     ini_path(path);
     GetPrivateProfileStringW(L"Audio", L"Output", L"auto", v, 32, path);
     WideCharToMultiByte(CP_UTF8, 0, v, -1, raw, (int)n, NULL, NULL);
+    layout->ch = 0;
+    for (size_t i = 0; i < sizeof layouts / sizeof layouts[0]; i++) {
+        WCHAR w[8];
+        MultiByteToWideChar(CP_UTF8, 0, layouts[i].name, -1, w, 8);
+        if (!_wcsicmp(v, w)) { *layout = layouts[i]; return REQ_LAYOUT; }
+    }
     if (!_wcsicmp(v, L"spatial")) return REQ_SPATIAL;
-    if (!_wcsicmp(v, L"surround")) return REQ_SURROUND;
     if (!_wcsicmp(v, L"stereo")) return REQ_STEREO;
     if (!_wcsicmp(v, L"headphones")) return REQ_HEADPHONES;
     if (!_wcsicmp(v, L"mono")) return REQ_MONO;
-    if (_wcsicmp(v, L"auto")) qlog("Unknown Output value; using auto. Choices: auto, spatial, surround, stereo, "
-                                   "mono, headphones.");
+    if (_wcsicmp(v, L"auto"))
+        qlog("Unknown Output value; using auto. Choices: auto, spatial, 7.1, 5.1, quad, stereo, headphones, mono.");
     return REQ_AUTO;
 }
 
-/* Masks as Windows names them: 5.1 with side speakers is what receivers and
- * Wwise's own 5.1 use. */
-static layout_t read_speakers(char *raw, size_t n)
+static void read_device(WCHAR *out, int n)
 {
-    static const layout_t known[] = {
-        { 2, 0x3, "stereo" }, { 4, 0x33, "quad" }, { 6, 0x60f, "5.1" }, { 8, 0x63f, "7.1" },
-    };
-    WCHAR path[MAX_PATH], v[32];
+    WCHAR path[MAX_PATH];
     ini_path(path);
-    GetPrivateProfileStringW(L"Audio", L"Speakers", L"auto", v, 32, path);
-    WideCharToMultiByte(CP_UTF8, 0, v, -1, raw, (int)n, NULL, NULL);
-    for (size_t i = 0; i < sizeof known / sizeof known[0]; i++) {
-        WCHAR w[16];
-        MultiByteToWideChar(CP_UTF8, 0, known[i].name, -1, w, 16);
-        if (!_wcsicmp(v, w)) return known[i];
-    }
-    layout_t a = { 0, 0, "auto" };
-    return a;
+    GetPrivateProfileStringW(L"Audio", L"Device", L"", out, n, path);
 }
 
 /* ---- vtable patching ---- */
@@ -264,12 +239,25 @@ static BOOL direct_game_call(void)
 
 /* ---- the device format the game is told ---- */
 static const PROPERTYKEY k_devfmt = { {0xf19f064d,0x082c,0x4e27,{0xbc,0x73,0x68,0x82,0xa1,0xbb,0x8e,0x4c}}, 0 };
+/* PKEY_AudioEndpoint_GUID: identifies which device a property store belongs to. */
+static const PROPERTYKEY k_epguid = { {0x1da5d803,0xd492,0x4edd,{0x8c,0x23,0xe0,0xc0,0xff,0xee,0x7f,0x0e}}, 4 };
 static WAVEFORMATEXTENSIBLE g_report;   /* what to answer with */
 static BOOL g_have_report;
+static WCHAR g_target_guid[64];         /* only this device's format is changed */
 static LONG g_reported;
 
 typedef HRESULT (STDMETHODCALLTYPE *pfn_psget)(void *, REFPROPERTYKEY, PROPVARIANT *);
 typedef HRESULT (STDMETHODCALLTYPE *pfn_openps)(void *, DWORD, void **);
+
+static BOOL store_is_target(void *self, pfn_psget o)
+{
+    PROPVARIANT g;
+    PropVariantInit(&g);
+    BOOL same = SUCCEEDED(o(self, &k_epguid, &g)) && g.vt == VT_LPWSTR && g.pwszVal &&
+                !_wcsicmp(g.pwszVal, g_target_guid);
+    PropVariantClear(&g);
+    return same;
+}
 
 static HRESULT STDMETHODCALLTYPE det_ps_getvalue(void *self, REFPROPERTYKEY key, PROPVARIANT *v)
 {
@@ -277,7 +265,7 @@ static HRESULT STDMETHODCALLTYPE det_ps_getvalue(void *self, REFPROPERTYKEY key,
     HRESULT hr = o ? o(self, key, v) : E_FAIL;
     if (!g_have_report || FAILED(hr) || !key || !v || v->vt != VT_BLOB || !v->blob.pBlobData ||
         v->blob.cbSize < sizeof(WAVEFORMATEX) || !IsEqualGUID(&key->fmtid, &k_devfmt.fmtid) ||
-        key->pid != k_devfmt.pid || !direct_game_call())
+        key->pid != k_devfmt.pid || !direct_game_call() || !store_is_target(self, o))
         return hr;
     const WAVEFORMATEX *hw = (const WAVEFORMATEX *)v->blob.pBlobData;
     if (hw->nChannels == g_report.Format.nChannels) return hr;
@@ -404,8 +392,13 @@ static void cfg_name(uint32_t v, char *out, size_t n)
     else snprintf(out, n, "%u channels (mask 0x%x)", ch, mask);
 }
 
-static void wwise_followup(BOOL headphone_pan, BOOL mono_bus)
+/* After Wwise starts: log what it mixes to; if mono or another device was
+ * chosen, rebuild its main output (id 0) once with ReplaceOutput; set
+ * headphone panning. wwise_dev = Wwise's id for the chosen device, 0 for the
+ * Windows default. */
+static void wwise_followup(BOOL headphone_pan, BOOL mono, uint32_t wwise_dev)
 {
+    BOOL replace = mono || wwise_dev;
     pfn_replaceout replaceout = (pfn_replaceout)(void *)GetProcAddress(g_game,
         "?ReplaceOutput@SoundEngine@AK@@YA?AW4AKRESULT@@AEBUAkOutputSettings@@_KPEA_K@Z");
     pfn_isinit isinit = (pfn_isinit)(void *)GetProcAddress(g_game, "?IsInitialized@SoundEngine@AK@@YA_NXZ");
@@ -419,9 +412,9 @@ static void wwise_followup(BOOL headphone_pan, BOOL mono_bus)
         qlog("Could not find Wwise's functions in the game; cannot confirm the result.");
         return;
     }
-    if (mono_bus && !replaceout) {
-        qlog("Could not find Wwise's ReplaceOutput in the game; mono is not available.");
-        mono_bus = FALSE;
+    if (replace && !replaceout) {
+        qlog("Could not find Wwise's ReplaceOutput in the game; mono and the Device setting are not available.");
+        replace = FALSE;
     }
     /* Wwise starts a few seconds in; its spatial stream a little later. Checks
      * run every half second for up to two minutes. */
@@ -440,6 +433,23 @@ static void wwise_followup(BOOL headphone_pan, BOOL mono_bus)
             qlog("Wwise is mixing to: %s.", d);
             last = cfg;
         }
+        /* Rebuild the main output: on the chosen device, and/or with a
+         * one-channel layout for mono (Wwise then mixes to one channel and
+         * spreads it over the device's real channels; changing the master bus
+         * by name did nothing, the game's bus has another name). Layout 0 =
+         * take it from the device, which is where the widened format comes in.
+         * Done once; the read-back logs the result on the next pass. */
+        if (replace) {
+            ak_output_settings_t s = { 0, wwise_dev, headphone_pan ? 1u : 0u, mono ? AKCFG_MONO : 0 };
+            uint64_t id = 0;
+            int r = replaceout(&s, 0, &id);
+            if (r == 1)
+                qlog("Asked Wwise to %s%s%s.", wwise_dev ? "play on the chosen device" : "",
+                     wwise_dev && mono ? " and " : "", mono ? "mix in mono" : "");
+            else
+                qlog("Wwise refused the new output (result %d).", r);
+            replace = FALSE;
+        }
         if (headphone_pan) {
             int rule = -1;
             if (setpan && setpan(1, 0) == 1 && getpan(&rule, 0) == 1 && rule == 1)
@@ -448,18 +458,6 @@ static void wwise_followup(BOOL headphone_pan, BOOL mono_bus)
                 qlog("Could not set Wwise's headphone panning.");
             headphone_pan = FALSE;
         }
-        /* Mono: rebuild the main output (id 0) with a one-channel layout.
-         * Wwise then mixes to one channel and spreads it over the device's
-         * real channels. (Changing the master bus by name did nothing: the
-         * game's bus is not called "Master Audio Bus".) Done once; the
-         * read-back above logs the result on the next pass. */
-        if (mono_bus) {
-            ak_output_settings_t s = { 0, 0, 0, AKCFG_MONO };
-            uint64_t id = 0;
-            int r = replaceout(&s, 0, &id);
-            qlog(r == 1 ? "Asked Wwise to mix in mono." : "Wwise refused the mono layout (result %d).", r);
-            mono_bus = FALSE;
-        }
         if (i - ready_at >= 40) break;
     }
 }
@@ -467,16 +465,79 @@ static void wwise_followup(BOOL headphone_pan, BOOL mono_bus)
 /* ---- startup ---- */
 static volatile LONG g_setup_done;
 
+/* Case-insensitive "does `hay` contain `needle`". */
+static BOOL name_contains(const WCHAR *hay, const WCHAR *needle)
+{
+    size_t n = wcslen(needle);
+    for (; *hay; hay++)
+        if (!_wcsnicmp(hay, needle, n)) return TRUE;
+    return FALSE;
+}
+
+static void friendly_name(IPropertyStore *ps, WCHAR *out, int n)
+{
+    PROPVARIANT v;
+    PropVariantInit(&v);
+    out[0] = 0;
+    if (SUCCEEDED(IPropertyStore_GetValue(ps, &PKEY_Device_FriendlyName, &v)) && v.vt == VT_LPWSTR && v.pwszVal)
+        wcsncpy(out, v.pwszVal, n - 1), out[n - 1] = 0;
+    PropVariantClear(&v);
+}
+
+/* The active output whose name contains `want`; NULL if none. Lists the
+ * names in the log when nothing matches, so the setting can be corrected. */
+static IMMDevice *find_device(IMMDeviceEnumerator *en, const WCHAR *want)
+{
+    IMMDeviceCollection *col = NULL;
+    IMMDevice *found = NULL;
+    UINT n = 0;
+    if (FAILED(IMMDeviceEnumerator_EnumAudioEndpoints(en, eRender, DEVICE_STATE_ACTIVE, &col))) return NULL;
+    IMMDeviceCollection_GetCount(col, &n);
+    for (UINT i = 0; i < n && !found; i++) {
+        IMMDevice *d = NULL;
+        IPropertyStore *ps = NULL;
+        WCHAR name[256];
+        if (FAILED(IMMDeviceCollection_Item(col, i, &d))) continue;
+        if (SUCCEEDED(IMMDevice_OpenPropertyStore(d, STGM_READ, &ps))) {
+            friendly_name(ps, name, 256);
+            IPropertyStore_Release(ps);
+            if (name[0] && name_contains(name, want)) { found = d; continue; }
+        }
+        IMMDevice_Release(d);
+    }
+    if (!found) {
+        qlog("No output device matches the Device setting. Available devices:");
+        for (UINT i = 0; i < n; i++) {
+            IMMDevice *d = NULL;
+            IPropertyStore *ps = NULL;
+            WCHAR name[256];
+            char u[512];
+            if (FAILED(IMMDeviceCollection_Item(col, i, &d))) continue;
+            if (SUCCEEDED(IMMDevice_OpenPropertyStore(d, STGM_READ, &ps))) {
+                friendly_name(ps, name, 256);
+                WideCharToMultiByte(CP_UTF8, 0, name, -1, u, sizeof u, NULL, NULL);
+                qlog("    %s", u);
+                IPropertyStore_Release(ps);
+            }
+            IMMDevice_Release(d);
+        }
+    }
+    IMMDeviceCollection_Release(col);
+    return found;
+}
+
+typedef uint32_t (*pfn_getdevid)(IMMDevice *);   /* AK::GetDeviceID(IMMDevice*) */
+
 static void worker_body(void)
 {
     plan_t p = { FALSE, 0, 0, FALSE, FALSE, "unchanged" };
-    char raw[32], rawsp[32];
-    request_t req = read_request(raw, sizeof raw);
-    layout_t forced = read_speakers(rawsp, sizeof rawsp);
-    qlog("Quarry Spatial Audio %s. Requested output: %s. Speakers: %s.", QSA_VERSION, raw,
-         forced.ch ? forced.name : rawsp);
-    if (!forced.ch && _stricmp(rawsp, "auto"))
-        qlog("Unknown Speakers value; using auto. Choices: auto, stereo, quad, 5.1, 7.1.");
+    char raw[32], devu[512];
+    layout_t layout;
+    request_t req = read_request(raw, sizeof raw, &layout);
+    WCHAR want[256];
+    read_device(want, 256);
+    WideCharToMultiByte(CP_UTF8, 0, want, -1, devu, sizeof devu, NULL, NULL);
+    qlog("Quarry Spatial Audio %s. Output: %s. Device: %s.", QSA_VERSION, raw, want[0] ? devu : "Windows default");
 
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) { qlog("Could not start COM; doing nothing."); return; }
@@ -488,11 +549,18 @@ static void worker_body(void)
     WAVEFORMATEX *mix = NULL;
     int hw_ch = 0;
     UINT32 maxdyn = 0;
+    uint32_t wwise_dev = 0;
 
     if (FAILED(CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator,
-                                (void **)&en)) ||
-        FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(en, eRender, eConsole, &dev))) {
+                                (void **)&en))) {
+        qlog("Could not list audio devices; doing nothing.");
+        goto out;
+    }
+    if (want[0]) dev = find_device(en, want);
+    BOOL named = dev != NULL;
+    if (!dev && FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(en, eRender, eConsole, &dev))) {
         qlog("No default audio output found; doing nothing.");
+        dev = NULL;
         goto out;
     }
     if (SUCCEEDED(IMMDevice_Activate(dev, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&ac)))
@@ -504,6 +572,20 @@ static void worker_body(void)
             v.blob.cbSize >= sizeof(WAVEFORMATEX))
             hw_ch = ((WAVEFORMATEX *)v.blob.pBlobData)->nChannels;
         PropVariantClear(&v);
+        PropVariantInit(&v);
+        if (SUCCEEDED(IPropertyStore_GetValue(ps, &k_epguid, &v)) && v.vt == VT_LPWSTR && v.pwszVal)
+            wcsncpy(g_target_guid, v.pwszVal, 63);
+        PropVariantClear(&v);
+        WCHAR name[256];
+        char u[512];
+        friendly_name(ps, name, 256);
+        WideCharToMultiByte(CP_UTF8, 0, name, -1, u, sizeof u, NULL, NULL);
+        qlog("Using %s: %s.", named ? "the chosen device" : "the Windows default device", u);
+    }
+    if (named) {
+        pfn_getdevid getdevid = (pfn_getdevid)(void *)GetProcAddress(g_game, "?GetDeviceID@AK@@YAIPEAUIMMDevice@@@Z");
+        wwise_dev = getdevid ? getdevid(dev) : 0;
+        if (!wwise_dev) qlog("Could not get Wwise's id for that device; the game stays on the Windows default.");
     }
     if (SUCCEEDED(IMMDevice_Activate(dev, &IID_ISpatialAudioClient, CLSCTX_ALL, NULL, (void **)&sac)))
         ISpatialAudioClient_GetMaxDynamicObjectCount(sac, &maxdyn);
@@ -520,24 +602,23 @@ static void worker_body(void)
     qlog("Device: hardware %d channels, Windows mixes at %d, Windows spatial sound %s.", hw_ch, mix_ch,
          maxdyn ? "on" : "off");
 
-    p = qsa_decide(req, maxdyn > 0, mix_ch, hw_ch, forced);
-    /* Any layout the mod makes up (mono, stereo, or one set by hand) is used
-     * only if Windows accepts it on this device -- Wwise asks the same
-     * question, and a refused format could leave the game silent. Windows'
-     * own mix format needs no check. */
+    p = qsa_decide(req, layout, maxdyn > 0, mix_ch, hw_ch);
+    /* Any layout the mod makes up (7.1, 5.1, quad, stereo) is used only if
+     * Windows accepts it on this device -- Wwise asks the same question, and
+     * a refused format could leave the game silent. Windows' own mix format
+     * needs no check. */
     if (p.report_channels && p.report_mask && ac && mix) {
         WAVEFORMATEX *closest = NULL;
         BOOL refuse_for_test = GetEnvironmentVariableW(L"QSA_TEST_REFUSE", NULL, 0) > 0;
         if (build_report(mix, p.report_channels, p.report_mask) &&
             (refuse_for_test ||
              IAudioClient_IsFormatSupported(ac, AUDCLNT_SHAREMODE_SHARED, &g_report.Format, &closest) != S_OK)) {
-            BOOL was_forced = forced.ch && p.report_channels == forced.ch && p.report_mask == forced.mask;
-            if (was_forced) {
-                qlog("Windows does not accept %s on this device; using the automatic layout.", forced.name);
-                layout_t none = { 0, 0, "auto" };
-                p = qsa_decide(req, maxdyn > 0, mix_ch, hw_ch, none);
+            qlog("Windows does not accept %s on this device.", p.name);
+            if (req == REQ_LAYOUT) {
+                /* Next best: the layout Windows mixes at, if wider than the hardware. */
+                layout_t none = { 0, 0, "" };
+                p = qsa_decide(REQ_AUTO, none, FALSE, mix_ch, hw_ch);
             } else {
-                qlog("Windows does not accept %s on this device; leaving the game's layout unchanged.", p.name);
                 p.report_channels = 0;
                 p.report_mask = 0;
                 p.name = "unchanged (the game's own output)";
@@ -547,8 +628,6 @@ static void worker_body(void)
     }
     qlog("Chosen: %s.", p.name);
     if (req == REQ_SPATIAL && !p.open_gate) qlog("Spatial was requested but Windows spatial sound is off.");
-    if (req == REQ_SURROUND && !p.report_channels)
-        qlog("Surround was requested but Windows does not mix this device wider than its hardware.");
 
     if (p.report_channels && hw_ch && build_report(mix, p.report_channels, p.report_mask)) {
         g_have_report = TRUE;
@@ -572,10 +651,12 @@ out:
     if (sac) ISpatialAudioClient_Release(sac);
     if (ac) IAudioClient_Release(ac);
     if (mix) CoTaskMemFree(mix);
-    if (dev) IMMDevice_Release(dev);
     if (en) IMMDeviceEnumerator_Release(en);
     InterlockedExchange(&g_setup_done, 1);
-    if (dev) wwise_followup(p.headphone_pan, p.mono_bus);
+    if (dev) {
+        wwise_followup(p.headphone_pan, p.mono, wwise_dev);
+        IMMDevice_Release(dev);
+    }
 }
 
 static DWORD WINAPI worker(void *arg)

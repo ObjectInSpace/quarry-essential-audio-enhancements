@@ -43,43 +43,49 @@ accessibility mod.
 
 Open `QuarrySpatial.ini` in a text editor. Restart the game after changing it.
 
-`Output=` sets what the game sends to Windows:
+There are two settings.
 
-- `auto` (the default) — spatial sound if it is switched on in Windows;
-  otherwise surround if there is a surround layout to use (see `Speakers=`);
-  otherwise the game's own output.
-- `spatial` — Windows spatial sound. Falls back to surround if spatial sound
-  is off.
-- `surround` — a surround channel layout (see `Speakers=`).
+`Output=` sets how the game's sound is laid out:
+
+- `auto` (the default) — 3D spatial sound if Windows spatial sound is switched
+  on for the device; otherwise the channel layout Windows mixes the device at,
+  when that is wider than what the device reports as its hardware (7.1 with
+  Atmos or Sonic on); otherwise the game's own output.
+- `spatial` — 3D spatial sound: a 7.1.4 mix plus individually positioned
+  sounds. This covers every Windows spatial format — Dolby Atmos for
+  Headphones, Dolby Atmos for home theater, Windows Sonic, DTS — because
+  Windows, not the game, turns the sound into what your headphones or receiver
+  needs. Falls back to what `auto` would choose if spatial sound is off.
+- `7.1`, `5.1` or `quad` — that speaker layout. `5.1` means front left and
+  right, centre, LFE and two side speakers, as most receivers use. With Atmos
+  or Sonic on, `7.1` gives you Atmos or Sonic rendering a 7.1 channel mix
+  instead of positioned sounds.
 - `stereo` — stereo, even on a surround device.
+- `headphones` — 3D spatial sound if it is switched on; otherwise stereo with
+  the game's sound engine set to headphone panning.
 - `mono` — the game mixes everything to one channel, played on both sides, so
   no sound is lost to one ear. Unlike Windows' own Mono audio setting, it
   affects only the game, not your screen reader or other programs.
-- `headphones` — spatial sound if it is switched on; otherwise stereo with the
-  game's sound engine set to headphone panning.
 
-`Speakers=` sets the channel layout used for surround, and as the fallback if
-spatial sound fails. Spatial sound itself does not use it; Windows places
-those sounds.
+Before using a layout it has made up (`7.1`, `5.1`, `quad` or `stereo`), the
+mod asks Windows whether it accepts that layout on your device. If Windows says
+no, the mod says so in the log and uses the next best choice, so a wrong
+setting cannot leave the game silent.
 
-- `auto` (the default) — the layout Windows mixes your device at, when that is
-  wider than what the device reports as its hardware. With Atmos or Sonic on,
-  that is 7.1.
-- `stereo`, `quad`, `5.1` or `7.1` — use this layout. Set it if your speakers
-  are not detected correctly. `5.1` means front left and right, centre, LFE and
-  two side speakers, as most receivers use.
-
-Before using a layout you set, the mod asks Windows whether it accepts that
-layout on your device. If Windows says no, the mod says so in the log and uses
-`auto` instead, so a wrong setting cannot leave the game silent.
+`Device=` sets which output the game plays on. Leave it empty for the Windows
+default. Otherwise write part of the device's name, for example `iD4` or
+`Headphones`; capitals do not matter. This lets you keep the game and your
+screen reader on different devices. If no device matches, the log lists the
+names of the available devices. The game may start on the default device for
+a moment before it switches.
 
 ## Checking that it works
 
 Each time the game starts, the mod writes `QuarrySpatial.log` next to the DLL.
 It is a few lines of plain text:
 
-- the device it found: how many channels the hardware has, what Windows
-  mixes at, and whether Windows spatial sound is on;
+- the device it used, how many channels its hardware has, what Windows mixes
+  it at, and whether Windows spatial sound is on for it;
 - the output it chose;
 - whether spatial sound was enabled in the game's sound engine;
 - what the game's sound engine (Wwise) ended up mixing to, read back from the
@@ -129,10 +135,14 @@ For modders and the curious.
   only if they match exactly, replaces the jump with two no-op instructions.
   Wwise then opens a Windows spatial audio stream with a 7.1.4 bed and up to
   128 positioned objects (measured with Dolby Atmos for Headphones).
-- **Mono.** Windows refuses a one-channel output stream on most devices, so
-  the output itself stays as it is. Instead the mod calls Wwise's exported
-  `ReplaceOutput` to rebuild the main output with a one-channel layout; Wwise
-  mixes to one channel and spreads it over the device's real channels.
+- **Mono and device choice.** Windows refuses a one-channel output stream on
+  most devices, so for mono the output itself stays as it is. Instead the mod
+  calls Wwise's exported `ReplaceOutput` to rebuild the main output with a
+  one-channel layout; Wwise mixes to one channel and spreads it over the
+  device's real channels. The same call, with the device's Wwise id from the
+  exported `AK::GetDeviceID`, moves the output to the chosen device. The
+  widened format is only given for that device: the mod checks the device's
+  endpoint id inside the property read.
 - **Reading the result back.** The game exports Wwise's API by name; the mod
   calls `GetSpeakerConfiguration` to log what Wwise is actually mixing to,
   and `SetPanningRule` for the headphones option.
@@ -150,7 +160,8 @@ Wwise functions under the game's names, and checks the pass-through, every
 output decision, the byte check before the spatial patch (including refusing
 a one-byte difference), that only the game's own device-format reads are
 changed, a speaker layout set by hand (both accepted and refused by Windows),
-the mono request, and the headphone panning call.
+mono, headphone panning, and the device choice (using another active output
+on the test machine, and a name that matches nothing).
 
 ## License
 

@@ -1,34 +1,45 @@
 /* Offline tests for Quarry Spatial Audio. This exe plays the part of the game
  * (it exports stand-ins for the Wwise functions the mod calls).
  *
- *   test_qsa.exe <dll> surround     told 7.1; Windows-internal reads see the truth
- *   test_qsa.exe <dll> headphones   spatial forced "off": stereo + headphone panning
- *   test_qsa.exe <dll> spatial      not The Quarry: the code patch must be refused
+ *   test_qsa.exe <dll> <scenario>
+ *     auto          Output=auto, spatial simulated off: Windows' mix layout;
+ *                   reads by other modules see the true format
+ *     layout51      Output=5.1: used if Windows accepts it
+ *     layout51no    Output=5.1, refusal simulated: falls back, logged
+ *     mono          Output=mono: the output is rebuilt with one channel
+ *     headphones    spatial simulated off: stereo + headphone panning
+ *     spatial       this exe is not The Quarry: the code patch is refused
+ *     device        Device=<another active output>: detection, widening and
+ *                   the rebuilt output all use that device
+ *     nodevice      Device=<no match>: devices listed, default kept
  *
- * Every mode also checks the X3DAudio pass-through, the decision table and
- * the patch verification. */
+ * Every scenario also checks the X3DAudio pass-through, the decision table
+ * and the patch verification. */
 #define COBJMACROS
 #include <initguid.h>
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <functiondiscoverykeys_devpkey.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 
-typedef enum { REQ_AUTO, REQ_SPATIAL, REQ_SURROUND, REQ_STEREO, REQ_HEADPHONES, REQ_MONO } request_t;
-typedef struct { BOOL open_gate; int report_channels; DWORD report_mask; BOOL headphone_pan; BOOL mono_bus; const char *name; } plan_t;
+typedef enum { REQ_AUTO, REQ_SPATIAL, REQ_LAYOUT, REQ_STEREO, REQ_HEADPHONES, REQ_MONO } request_t;
 typedef struct { int ch; DWORD mask; const char *name; } layout_t;
-typedef plan_t (*pfn_decide)(request_t, BOOL, int, int, layout_t);
-static const layout_t AUTO = { 0, 0, "auto" }, L51 = { 6, 0x60f, "5.1" }, L71 = { 8, 0x63f, "7.1" };
+typedef struct { BOOL open_gate; int report_channels; DWORD report_mask; BOOL headphone_pan; BOOL mono; const char *name; } plan_t;
+typedef plan_t (*pfn_decide)(request_t, layout_t, BOOL, int, int);
 typedef int (*pfn_gate)(BYTE *);
 typedef BOOL (*pfn_wait)(DWORD);
 typedef HRESULT (WINAPI *pfn_x3dinit)(UINT32, float, BYTE *);
 typedef int (*pfn_fwin)(IMMDevice *);
 
-extern int fw_initialized, fw_pan, fw_setpan_calls, fw_replace_calls;
+static const layout_t NONE = { 0, 0, "" }, L51 = { 6, 0x60f, "5.1" }, L71 = { 8, 0x63f, "7.1" };
+
+extern int fw_initialized, fw_pan, fw_setpan_calls, fw_replace_calls, fw_getdevid_calls;
 extern uint32_t fw_speaker_cfg, fw_replace_settings[4];
 extern uint64_t fw_replace_id;
+extern WCHAR fw_getdevid_endpoint[128];
 
 static int fails;
 #define CHECK(cond, ...) do { if (cond) printf("  ok   "); else { printf("  FAIL "); fails++; } \
@@ -51,9 +62,22 @@ static int devfmt_channels(IMMDevice *dev)
     return ch;
 }
 
+static void device_name(IMMDevice *d, char *out, size_t n)
+{
+    IPropertyStore *ps = NULL;
+    PROPVARIANT v;
+    PropVariantInit(&v);
+    out[0] = 0;
+    if (SUCCEEDED(IMMDevice_OpenPropertyStore(d, STGM_READ, &ps)) &&
+        SUCCEEDED(IPropertyStore_GetValue(ps, &PKEY_Device_FriendlyName, &v)) && v.vt == VT_LPWSTR)
+        WideCharToMultiByte(CP_UTF8, 0, v.pwszVal, -1, out, (int)n, NULL, NULL);
+    PropVariantClear(&v);
+    if (ps) IPropertyStore_Release(ps);
+}
+
 static BOOL log_has(const char *dir, const char *text)
 {
-    char path[MAX_PATH], buf[8192];
+    char path[MAX_PATH + 32], buf[16384];
     snprintf(path, sizeof path, "%sQuarrySpatial.log", dir);
     FILE *f = fopen(path, "rb");
     if (!f) return FALSE;
@@ -73,25 +97,67 @@ static BOOL wait_log(const char *dir, const char *text, DWORD ms)
     return log_has(dir, text);
 }
 
+/* Another active output than the default, for the device scenario. */
+static IMMDevice *other_device(IMMDeviceEnumerator *en, IMMDevice *def)
+{
+    LPWSTR defid = NULL;
+    IMMDevice_GetId(def, &defid);
+    IMMDeviceCollection *col = NULL;
+    IMMDevice *found = NULL;
+    UINT n = 0;
+    IMMDeviceEnumerator_EnumAudioEndpoints(en, eRender, DEVICE_STATE_ACTIVE, &col);
+    if (col) IMMDeviceCollection_GetCount(col, &n);
+    for (UINT i = 0; i < n && !found; i++) {
+        IMMDevice *d = NULL;
+        LPWSTR id = NULL;
+        IMMDeviceCollection_Item(col, i, &d);
+        if (d && SUCCEEDED(IMMDevice_GetId(d, &id)) && wcscmp(id, defid)) found = d;
+        else if (d) IMMDevice_Release(d);
+        CoTaskMemFree(id);
+    }
+    if (col) IMMDeviceCollection_Release(col);
+    CoTaskMemFree(defid);
+    return found;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc < 3) { printf("usage: test_qsa <dll> surround|headphones|spatial\n"); return 2; }
+    if (argc < 3) { printf("usage: test_qsa <dll> <scenario>\n"); return 2; }
     const char *dll = argv[1], *mode = argv[2];
     char dir[MAX_PATH];
     GetFullPathNameA(dll, MAX_PATH, dir, NULL);
     char *slash = strrchr(dir, '\\');
     if (slash) slash[1] = 0;
 
-    char ini[MAX_PATH];
+    /* The device scenario needs to know the devices before writing the ini. */
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    IMMDeviceEnumerator *en = NULL;
+    IMMDevice *def = NULL, *other = NULL;
+    CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void **)&en);
+    if (!en || FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(en, eRender, eConsole, &def))) {
+        printf("FAIL: no audio device\n");
+        return 1;
+    }
+    char other_name[256] = "";
+    if (!strcmp(mode, "device")) {
+        other = other_device(en, def);
+        if (!other) { printf("scenario device: NOT EXERCISED (only one active output)\n"); return 0; }
+        device_name(other, other_name, sizeof other_name);
+    }
+
+    char ini[MAX_PATH + 32];
     snprintf(ini, sizeof ini, "%sQuarrySpatial.ini", dir);
     FILE *f = fopen(ini, "w");
-    if (!strcmp(mode, "surround51") || !strcmp(mode, "surround51refused"))
-        fprintf(f, "[Audio]\nOutput=surround\nSpeakers=5.1\n");
-    else fprintf(f, "[Audio]\nOutput=%s\n", mode);
+    const char *out = !strcmp(mode, "layout51") || !strcmp(mode, "layout51no") ? "5.1"
+                    : !strcmp(mode, "device") || !strcmp(mode, "nodevice") ? "auto" : mode;
+    fprintf(f, "[Audio]\nOutput=%s\n", out);
+    if (!strcmp(mode, "device")) fprintf(f, "Device=%s\n", other_name);
+    if (!strcmp(mode, "nodevice")) fprintf(f, "Device=zz no such device zz\n");
     fclose(f);
     SetEnvironmentVariableA("QSA_TEST_TARGET71", "1");
-    if (!strcmp(mode, "headphones")) SetEnvironmentVariableA("QSA_TEST_NOSPATIAL", "1");
-    if (!strcmp(mode, "surround51refused")) SetEnvironmentVariableA("QSA_TEST_REFUSE", "1");
+    if (!strcmp(mode, "auto") || !strcmp(mode, "headphones") || !strcmp(mode, "device") || !strcmp(mode, "nodevice"))
+        SetEnvironmentVariableA("QSA_TEST_NOSPATIAL", "1");
+    if (!strcmp(mode, "layout51no")) SetEnvironmentVariableA("QSA_TEST_REFUSE", "1");
 
     HMODULE m = LoadLibraryA(dll);
     if (!m) { printf("FAIL: cannot load %s\n", dll); return 1; }
@@ -100,7 +166,7 @@ int main(int argc, char **argv)
     pfn_wait wait = (pfn_wait)(void *)GetProcAddress(m, "qsa_wait_setup");
     pfn_x3dinit px = (pfn_x3dinit)(void *)GetProcAddress(m, "X3DAudioInitialize");
     if (!decide || !gate || !wait || !px) { printf("FAIL: missing exports\n"); return 1; }
-    printf("mode %s\n", mode);
+    printf("scenario %s\n", mode);
     CHECK(wait(5000), "setup finished");
 
     printf("pass-through\n");
@@ -121,41 +187,34 @@ int main(int argc, char **argv)
     printf("decisions\n");
     {
         plan_t p;
-        p = decide(REQ_AUTO, TRUE, 8, 2, AUTO);
-        CHECK(p.open_gate && p.report_channels == 8 && !p.report_mask && !p.headphone_pan, "auto, spatial on, 8>2: spatial with 7.1 fallback");
-        p = decide(REQ_AUTO, FALSE, 8, 2, AUTO);
-        CHECK(!p.open_gate && p.report_channels == 8 && !p.report_mask, "auto, spatial off, 8>2: surround at the mix format");
-        p = decide(REQ_AUTO, FALSE, 2, 2, AUTO);
-        CHECK(!p.open_gate && p.report_channels == 0, "auto, plain stereo device: unchanged");
-        p = decide(REQ_AUTO, FALSE, 8, 8, AUTO);
-        CHECK(!p.open_gate && p.report_channels == 0, "auto, real 7.1 device: unchanged (already 7.1)");
-        p = decide(REQ_SPATIAL, FALSE, 8, 2, AUTO);
-        CHECK(!p.open_gate && p.report_channels == 8, "spatial requested but off: surround instead");
-        p = decide(REQ_SURROUND, TRUE, 8, 2, AUTO);
-        CHECK(!p.open_gate && p.report_channels == 8, "surround requested with spatial on: surround only");
-        p = decide(REQ_STEREO, TRUE, 8, 8, AUTO);
-        CHECK(!p.open_gate && p.report_channels == 2 && p.report_mask == 0x3, "stereo on a 7.1 device: report 2 channels");
-        p = decide(REQ_STEREO, TRUE, 8, 2, AUTO);
-        CHECK(!p.open_gate && p.report_channels == 0, "stereo on a stereo device: unchanged");
-        p = decide(REQ_HEADPHONES, TRUE, 8, 2, AUTO);
+        p = decide(REQ_AUTO, NONE, TRUE, 8, 2);
+        CHECK(p.open_gate && p.report_channels == 8 && !p.report_mask, "auto, spatial on, 8>2: spatial, 7.1 fallback");
+        p = decide(REQ_AUTO, NONE, FALSE, 8, 2);
+        CHECK(!p.open_gate && p.report_channels == 8 && !p.report_mask, "auto, spatial off, 8>2: the mix layout");
+        p = decide(REQ_AUTO, NONE, FALSE, 2, 2);
+        CHECK(!p.open_gate && !p.report_channels, "auto, plain stereo device: unchanged");
+        p = decide(REQ_AUTO, NONE, FALSE, 8, 8);
+        CHECK(!p.report_channels, "auto, real 7.1 device: unchanged (already 7.1)");
+        p = decide(REQ_SPATIAL, NONE, FALSE, 8, 2);
+        CHECK(!p.open_gate && p.report_channels == 8, "spatial requested but off: the mix layout instead");
+        p = decide(REQ_LAYOUT, L51, TRUE, 8, 2);
+        CHECK(!p.open_gate && p.report_channels == 6 && p.report_mask == 0x60f, "5.1 with spatial on: 5.1, no spatial");
+        p = decide(REQ_LAYOUT, L51, FALSE, 2, 2);
+        CHECK(p.report_channels == 6 && p.report_mask == 0x60f, "5.1 on a device that looks stereo: 5.1");
+        p = decide(REQ_LAYOUT, L71, FALSE, 8, 8);
+        CHECK(!p.report_channels, "7.1 on real 7.1 hardware: nothing to change");
+        p = decide(REQ_STEREO, NONE, TRUE, 8, 8);
+        CHECK(!p.open_gate && p.report_channels == 2 && p.report_mask == 0x3, "stereo on a 7.1 device: 2 channels");
+        p = decide(REQ_STEREO, NONE, TRUE, 8, 2);
+        CHECK(!p.report_channels, "stereo on a stereo device: unchanged");
+        p = decide(REQ_HEADPHONES, NONE, TRUE, 8, 2);
         CHECK(p.open_gate && !p.headphone_pan, "headphones with spatial on: spatial");
-        p = decide(REQ_HEADPHONES, FALSE, 2, 2, AUTO);
-        CHECK(!p.open_gate && p.headphone_pan && p.report_channels == 0, "headphones, spatial off: stereo + headphone panning");
-        p = decide(REQ_SURROUND, FALSE, 2, 2, L51);
-        CHECK(p.report_channels == 6 && p.report_mask == 0x60f, "Speakers=5.1 on a device that looks stereo: 5.1");
-        p = decide(REQ_SURROUND, FALSE, 8, 2, L51);
-        CHECK(p.report_channels == 6 && p.report_mask == 0x60f, "Speakers=5.1 wins over a 7.1 mix");
-        p = decide(REQ_AUTO, FALSE, 8, 8, L71);
-        CHECK(p.report_channels == 0, "Speakers=7.1 on real 7.1 hardware: nothing to change");
-        p = decide(REQ_AUTO, TRUE, 8, 2, L51);
-        CHECK(p.open_gate && p.report_channels == 6 && p.report_mask == 0x60f, "spatial on with Speakers=5.1: spatial, 5.1 fallback");
-        p = decide(REQ_STEREO, FALSE, 8, 8, L51);
-        CHECK(p.report_channels == 2 && p.report_mask == 0x3, "Output=stereo ignores Speakers");
-        p = decide(REQ_MONO, TRUE, 8, 2, L51);
-        CHECK(!p.open_gate && p.report_channels == 0 && p.mono_bus && !p.headphone_pan,
-              "mono with spatial on: master bus mono, output format and spatial left alone");
-        p = decide(REQ_AUTO, TRUE, 8, 2, AUTO);
-        CHECK(!p.mono_bus, "only Output=mono asks for a mono bus");
+        p = decide(REQ_HEADPHONES, NONE, FALSE, 2, 2);
+        CHECK(!p.open_gate && p.headphone_pan && !p.report_channels, "headphones, spatial off: stereo + headphone panning");
+        p = decide(REQ_MONO, NONE, TRUE, 8, 2);
+        CHECK(!p.open_gate && !p.report_channels && p.mono, "mono with spatial on: mono only");
+        p = decide(REQ_AUTO, NONE, TRUE, 8, 2);
+        CHECK(!p.mono, "only Output=mono asks for mono");
     }
 
     printf("patch verification\n");
@@ -185,34 +244,23 @@ int main(int argc, char **argv)
         CHECK(r3 == -1 && !memcmp(b + 100, copy, 18), "one byte different: refused, untouched (r %d)", r3);
     }
 
-    CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    IMMDeviceEnumerator *en = NULL;
-    IMMDevice *dev = NULL;
-    CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void **)&en);
-    if (!en || FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(en, eRender, eConsole, &dev))) {
-        printf("FAIL: no audio device\n");
-        return 1;
-    }
-
-    if (!strcmp(mode, "surround")) {
-        printf("surround\n");
+    printf("%s\n", mode);
+    if (!strcmp(mode, "auto")) {
         HMODULE fw = LoadLibraryA("build\\fake_windows.dll");
         pfn_fwin fwin = fw ? (pfn_fwin)(void *)GetProcAddress(fw, "fwin_devfmt_channels") : NULL;
-        int direct = devfmt_channels(dev);
-        int indirect = fwin ? fwin(dev) : -9;
+        int direct = devfmt_channels(def), indirect = fwin ? fwin(def) : -9;
         CHECK(direct == 8, "the game's own read: told 8 channels (got %d)", direct);
         CHECK(indirect > 0 && indirect < 8, "a read made by another module: the true format (got %d)", indirect);
-        CHECK(log_has(dir, "told 8 channels instead of"), "logged once");
+        CHECK(log_has(dir, "told 8 channels instead of"), "logged");
         fw_speaker_cfg = 0x63f108;
         fw_initialized = 1;
         CHECK(wait_log(dir, "Wwise is mixing to: 7.1.", 3000), "Wwise's layout read back and logged as 7.1");
-        CHECK(fw_setpan_calls == 0, "panning left alone");
-    } else if (!strcmp(mode, "surround51")) {
-        printf("surround with Speakers=5.1\n");
-        /* Ask Windows the same question the mod asks, then hold the mod to the answer. */
+        Sleep(700);
+        CHECK(!fw_replace_calls && !fw_setpan_calls, "output not rebuilt, panning left alone");
+    } else if (!strcmp(mode, "layout51")) {
         IAudioClient *ac = NULL;
-        WAVEFORMATEX *mix = NULL, *closest = NULL;
-        IMMDevice_Activate(dev, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&ac);
+        WAVEFORMATEX *closest = NULL;
+        IMMDevice_Activate(def, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&ac);
         WAVEFORMATEXTENSIBLE x;
         memset(&x, 0, sizeof x);
         x.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
@@ -227,50 +275,67 @@ int main(int argc, char **argv)
         x.SubFormat = (GUID){ WAVE_FORMAT_IEEE_FLOAT, 0, 0x10, { 0x80,0,0,0xaa,0,0x38,0x9b,0x71 } };
         BOOL accepted = ac && IAudioClient_IsFormatSupported(ac, AUDCLNT_SHAREMODE_SHARED, &x.Format, &closest) == S_OK;
         if (closest) CoTaskMemFree(closest);
-        if (mix) CoTaskMemFree(mix);
         if (ac) IAudioClient_Release(ac);
-        int direct = devfmt_channels(dev);
+        int direct = devfmt_channels(def);
         printf("  (Windows %s 5.1 on this device)\n", accepted ? "accepts" : "refuses");
-        if (accepted)
-            CHECK(direct == 6 && log_has(dir, "Chosen: surround (the speaker layout set in QuarrySpatial.ini)."),
-                  "accepted: the game is told 5.1 (got %d)", direct);
-        else
-            CHECK(direct == 8 && log_has(dir, "Windows does not accept 5.1 on this device"),
-                  "refused: logged, automatic 7.1 used instead (got %d)", direct);
-    } else if (!strcmp(mode, "mono")) {
-        printf("mono\n");
-        int direct = devfmt_channels(dev);
-        CHECK(direct > 0 && direct != 8 && log_has(dir, "Chosen: mono"),
-              "the device format is left alone (got %d)", direct);
-        CHECK(fw_replace_calls == 0, "nothing sent before Wwise is running");
-        fw_initialized = 1;
-        CHECK(wait_log(dir, "Asked Wwise to mix in mono.", 3000) && fw_replace_calls == 1 &&
-              fw_replace_id == 0 && fw_replace_settings[0] == 0 && fw_replace_settings[1] == 0 &&
-              fw_replace_settings[2] == 0 && fw_replace_settings[3] == 0x4101,
-              "ReplaceOutput({0, 0, 0, 0x%x}, output %llu) once Wwise runs (%d call(s))",
-              fw_replace_settings[3], (unsigned long long)fw_replace_id, fw_replace_calls);
-        CHECK(wait_log(dir, "Wwise is mixing to: mono.", 3000), "the mono layout read back and logged");
-        Sleep(1500);
-        CHECK(fw_replace_calls == 1, "done once, not repeated (%d calls)", fw_replace_calls);
-    } else if (!strcmp(mode, "surround51refused")) {
-        printf("surround with Speakers=5.1, Windows refusal simulated\n");
-        int direct = devfmt_channels(dev);
-        CHECK(direct == 8 && log_has(dir, "Windows does not accept 5.1 on this device") &&
+        if (accepted) CHECK(direct == 6 && log_has(dir, "Chosen: 5.1."), "accepted: told 5.1 (got %d)", direct);
+        else CHECK(direct == 8 && log_has(dir, "does not accept 5.1"), "refused: fell back to 7.1 (got %d)", direct);
+    } else if (!strcmp(mode, "layout51no")) {
+        int direct = devfmt_channels(def);
+        CHECK(direct == 8 && log_has(dir, "Windows does not accept 5.1 on this device.") &&
               log_has(dir, "Chosen: surround (the channel layout Windows mixes at)."),
-              "refused: logged, automatic 7.1 used instead (got %d)", direct);
+              "refused: logged, the mix layout used instead (got %d)", direct);
+    } else if (!strcmp(mode, "mono")) {
+        int direct = devfmt_channels(def);
+        CHECK(direct > 0 && direct != 8 && log_has(dir, "Chosen: mono"), "device format left alone (got %d)", direct);
+        CHECK(!fw_replace_calls, "nothing sent before Wwise is running");
+        fw_initialized = 1;
+        CHECK(wait_log(dir, "Asked Wwise to mix in mono.", 3000) && fw_replace_calls == 1 && fw_replace_id == 0 &&
+              fw_replace_settings[0] == 0 && fw_replace_settings[1] == 0 && fw_replace_settings[2] == 0 &&
+              fw_replace_settings[3] == 0x4101,
+              "ReplaceOutput({0, 0, 0, 0x%x}, output %llu) once Wwise runs", fw_replace_settings[3],
+              (unsigned long long)fw_replace_id);
+        CHECK(wait_log(dir, "Wwise is mixing to: mono.", 3000), "mono read back and logged");
+        Sleep(1500);
+        CHECK(fw_replace_calls == 1, "done once (%d calls)", fw_replace_calls);
     } else if (!strcmp(mode, "headphones")) {
-        printf("headphones (spatial simulated off)\n");
         CHECK(log_has(dir, "Chosen: stereo with headphone panning."), "chose stereo with headphone panning");
         fw_initialized = 1;
         CHECK(wait_log(dir, "Wwise panning set to headphones.", 3000) && fw_pan == 1 && fw_setpan_calls == 1,
               "headphone panning set once and read back (pan %d, calls %d)", fw_pan, fw_setpan_calls);
+        CHECK(!fw_replace_calls, "output not rebuilt (default device, not mono)");
     } else if (!strcmp(mode, "spatial")) {
-        printf("spatial (this exe is not The Quarry)\n");
         CHECK(log_has(dir, "Spatial sound NOT enabled: this game version is not the one this mod knows."),
               "refused to patch an exe whose bytes do not match");
+    } else if (!strcmp(mode, "device")) {
+        printf("  (chosen device: %s)\n", other_name);
+        char want[300];
+        snprintf(want, sizeof want, "Using the chosen device: %s.", other_name);
+        CHECK(log_has(dir, want), "the named device is used");
+        LPWSTR id = NULL;
+        IMMDevice_GetId(other, &id);
+        CHECK(fw_getdevid_calls == 1 && id && !wcscmp(fw_getdevid_endpoint, id),
+              "Wwise's id asked for that device (%d call(s))", fw_getdevid_calls);
+        CoTaskMemFree(id);
+        int on_other = devfmt_channels(other), on_def = devfmt_channels(def);
+        CHECK(on_other == 8, "the chosen device's format is widened (got %d)", on_other);
+        CHECK(on_def > 0 && on_def < 8, "the default device's format is not (got %d)", on_def);
+        fw_initialized = 1;
+        CHECK(wait_log(dir, "Asked Wwise to play on the chosen device.", 3000) && fw_replace_calls == 1 &&
+              fw_replace_id == 0 && fw_replace_settings[0] == 0 && fw_replace_settings[1] == 4242 &&
+              fw_replace_settings[3] == 0,
+              "ReplaceOutput({0, %u, %u, 0x%x}) on the main output", fw_replace_settings[1], fw_replace_settings[2],
+              fw_replace_settings[3]);
+    } else if (!strcmp(mode, "nodevice")) {
+        CHECK(log_has(dir, "No output device matches the Device setting. Available devices:") &&
+              log_has(dir, "Using the Windows default device:"), "devices listed, default used");
+        fw_initialized = 1;
+        Sleep(1200);
+        CHECK(!fw_replace_calls && !fw_getdevid_calls, "output not rebuilt");
     }
 
-    IMMDevice_Release(dev);
+    if (other) IMMDevice_Release(other);
+    IMMDevice_Release(def);
     IMMDeviceEnumerator_Release(en);
     printf("%s: %d failure(s)\n", fails ? "FAILED" : "PASSED", fails);
     return fails ? 1 : 0;

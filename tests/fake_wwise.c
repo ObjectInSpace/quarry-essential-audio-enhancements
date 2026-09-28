@@ -2,7 +2,26 @@
  * under the game's MSVC names (test_qsa.def). Calling conventions follow the
  * game's machine code: GetSpeakerConfiguration(rcx = AkChannelConfig* return
  * slot, rdx = device id); Get/SetPanningRule(rule* or rule, device id). */
+#define COBJMACROS
+#include <windows.h>
+#include <mmdeviceapi.h>
 #include <stdint.h>
+
+/* AK::GetDeviceID(IMMDevice*): records which device it was asked about and
+ * answers with a recognisable id. */
+int fw_getdevid_calls;
+WCHAR fw_getdevid_endpoint[128];
+
+__attribute__((noinline)) uint32_t fw_GetDeviceID(IMMDevice *d)
+{
+    LPWSTR id = NULL;
+    fw_getdevid_calls++;
+    if (d && SUCCEEDED(IMMDevice_GetId(d, &id))) {
+        wcsncpy(fw_getdevid_endpoint, id, 127);
+        CoTaskMemFree(id);
+    }
+    return 4242;
+}
 
 int fw_initialized;
 uint32_t fw_speaker_cfg = 0x3102;   /* stereo */
