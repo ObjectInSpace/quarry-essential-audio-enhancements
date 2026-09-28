@@ -52,6 +52,9 @@ Open `QuarrySpatial.ini` in a text editor. Restart the game after changing it.
   is off.
 - `surround` — a surround channel layout (see `Speakers=`).
 - `stereo` — stereo, even on a surround device.
+- `mono` — the game mixes everything to one channel, played on both sides, so
+  no sound is lost to one ear. Unlike Windows' own Mono audio setting, it
+  affects only the game, not your screen reader or other programs.
 - `headphones` — spatial sound if it is switched on; otherwise stereo with the
   game's sound engine set to headphone panning.
 
@@ -126,6 +129,10 @@ For modders and the curious.
   only if they match exactly, replaces the jump with two no-op instructions.
   Wwise then opens a Windows spatial audio stream with a 7.1.4 bed and up to
   128 positioned objects (measured with Dolby Atmos for Headphones).
+- **Mono.** Windows refuses a one-channel output stream on most devices, so
+  the output itself stays as it is. Instead the mod calls Wwise's exported
+  `ReplaceOutput` to rebuild the main output with a one-channel layout; Wwise
+  mixes to one channel and spreads it over the device's real channels.
 - **Reading the result back.** The game exports Wwise's API by name; the mod
   calls `GetSpeakerConfiguration` to log what Wwise is actually mixing to,
   and `SetPanningRule` for the headphones option.
@@ -143,7 +150,7 @@ Wwise functions under the game's names, and checks the pass-through, every
 output decision, the byte check before the spatial patch (including refusing
 a one-byte difference), that only the game's own device-format reads are
 changed, a speaker layout set by hand (both accepted and refused by Windows),
-and the headphone panning call.
+the mono request, and the headphone panning call.
 
 ## License
 

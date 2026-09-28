@@ -16,8 +16,8 @@
 #include <string.h>
 #include <stdint.h>
 
-typedef enum { REQ_AUTO, REQ_SPATIAL, REQ_SURROUND, REQ_STEREO, REQ_HEADPHONES } request_t;
-typedef struct { BOOL open_gate; int report_channels; DWORD report_mask; BOOL headphone_pan; const char *name; } plan_t;
+typedef enum { REQ_AUTO, REQ_SPATIAL, REQ_SURROUND, REQ_STEREO, REQ_HEADPHONES, REQ_MONO } request_t;
+typedef struct { BOOL open_gate; int report_channels; DWORD report_mask; BOOL headphone_pan; BOOL mono_bus; const char *name; } plan_t;
 typedef struct { int ch; DWORD mask; const char *name; } layout_t;
 typedef plan_t (*pfn_decide)(request_t, BOOL, int, int, layout_t);
 static const layout_t AUTO = { 0, 0, "auto" }, L51 = { 6, 0x60f, "5.1" }, L71 = { 8, 0x63f, "7.1" };
@@ -26,8 +26,9 @@ typedef BOOL (*pfn_wait)(DWORD);
 typedef HRESULT (WINAPI *pfn_x3dinit)(UINT32, float, BYTE *);
 typedef int (*pfn_fwin)(IMMDevice *);
 
-extern int fw_initialized, fw_pan, fw_setpan_calls;
-extern uint32_t fw_speaker_cfg;
+extern int fw_initialized, fw_pan, fw_setpan_calls, fw_replace_calls;
+extern uint32_t fw_speaker_cfg, fw_replace_settings[4];
+extern uint64_t fw_replace_id;
 
 static int fails;
 #define CHECK(cond, ...) do { if (cond) printf("  ok   "); else { printf("  FAIL "); fails++; } \
@@ -150,6 +151,11 @@ int main(int argc, char **argv)
         CHECK(p.open_gate && p.report_channels == 6 && p.report_mask == 0x60f, "spatial on with Speakers=5.1: spatial, 5.1 fallback");
         p = decide(REQ_STEREO, FALSE, 8, 8, L51);
         CHECK(p.report_channels == 2 && p.report_mask == 0x3, "Output=stereo ignores Speakers");
+        p = decide(REQ_MONO, TRUE, 8, 2, L51);
+        CHECK(!p.open_gate && p.report_channels == 0 && p.mono_bus && !p.headphone_pan,
+              "mono with spatial on: master bus mono, output format and spatial left alone");
+        p = decide(REQ_AUTO, TRUE, 8, 2, AUTO);
+        CHECK(!p.mono_bus, "only Output=mono asks for a mono bus");
     }
 
     printf("patch verification\n");
@@ -231,6 +237,21 @@ int main(int argc, char **argv)
         else
             CHECK(direct == 8 && log_has(dir, "Windows does not accept 5.1 on this device"),
                   "refused: logged, automatic 7.1 used instead (got %d)", direct);
+    } else if (!strcmp(mode, "mono")) {
+        printf("mono\n");
+        int direct = devfmt_channels(dev);
+        CHECK(direct > 0 && direct != 8 && log_has(dir, "Chosen: mono"),
+              "the device format is left alone (got %d)", direct);
+        CHECK(fw_replace_calls == 0, "nothing sent before Wwise is running");
+        fw_initialized = 1;
+        CHECK(wait_log(dir, "Asked Wwise to mix in mono.", 3000) && fw_replace_calls == 1 &&
+              fw_replace_id == 0 && fw_replace_settings[0] == 0 && fw_replace_settings[1] == 0 &&
+              fw_replace_settings[2] == 0 && fw_replace_settings[3] == 0x4101,
+              "ReplaceOutput({0, 0, 0, 0x%x}, output %llu) once Wwise runs (%d call(s))",
+              fw_replace_settings[3], (unsigned long long)fw_replace_id, fw_replace_calls);
+        CHECK(wait_log(dir, "Wwise is mixing to: mono.", 3000), "the mono layout read back and logged");
+        Sleep(1500);
+        CHECK(fw_replace_calls == 1, "done once, not repeated (%d calls)", fw_replace_calls);
     } else if (!strcmp(mode, "surround51refused")) {
         printf("surround with Speakers=5.1, Windows refusal simulated\n");
         int direct = devfmt_channels(dev);

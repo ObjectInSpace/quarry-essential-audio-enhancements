@@ -24,6 +24,23 @@ __attribute__((noinline)) int fw_GetPanningRule(int *out, uint64_t dev)
     return 1;
 }
 
+/* ReplaceOutput(const AkOutputSettings&, AkOutputDeviceID, AkOutputDeviceID*):
+ * records what it was given and, like Wwise, the new layout then shows up in
+ * GetSpeakerConfiguration. */
+uint32_t fw_replace_settings[4];
+uint64_t fw_replace_id = 99;
+int fw_replace_calls;
+
+__attribute__((noinline)) int fw_ReplaceOutput(const uint32_t *settings, uint64_t id, uint64_t *out)
+{
+    fw_replace_calls++;
+    for (int i = 0; i < 4; i++) fw_replace_settings[i] = settings[i];
+    fw_replace_id = id;
+    if (out) *out = 0;
+    fw_speaker_cfg = settings[3];
+    return 1;
+}
+
 __attribute__((noinline)) int fw_SetPanningRule(int rule, uint64_t dev)
 {
     fw_setpan_calls++;
