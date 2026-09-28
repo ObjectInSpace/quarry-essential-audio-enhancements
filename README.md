@@ -1,4 +1,4 @@
-# Quarry Spatial Audio
+# Essential Audio Enhancements for The Quarry
 
 A mod for **The Quarry** (PC, Steam) that makes the game output **surround
 sound** and **Windows spatial sound** — Dolby Atmos for Headphones, Windows
@@ -30,7 +30,7 @@ alongside other mods, including UE4SS-based ones.
 
 ## Installing
 
-1. Download `X3DAudio1_7.dll` and `QuarrySpatial.ini` from the latest release.
+1. Download `X3DAudio1_7.dll` and `QuarryEssentialAudio.ini` from the latest release.
 2. Open the game folder, then `SMG026\Binaries\Win64` — the folder that
    contains `TheQuarry-Win64-Shipping.exe`. In Steam: right-click The Quarry,
    Manage, Browse local files.
@@ -39,7 +39,7 @@ alongside other mods, including UE4SS-based ones.
 
 ## Settings
 
-Open `QuarrySpatial.ini` in a text editor. Restart the game after changing it.
+Open `QuarryEssentialAudio.ini` in a text editor. Restart the game after changing it.
 
 There are three settings.
 
@@ -103,7 +103,7 @@ You do not need Dolby Atmos to hear the game in 3D on ordinary headphones.
 
 ## Checking that it works
 
-Each time the game starts, the mod writes `QuarrySpatial.log` next to the DLL.
+Each time the game starts, the mod writes `QuarryEssentialAudio.log` next to the DLL.
 It is a few lines of plain text:
 
 - the device it used, how many channels its hardware has, what Windows mixes
@@ -116,7 +116,7 @@ It is a few lines of plain text:
 
 ## Uninstalling
 
-Delete `X3DAudio1_7.dll`, `QuarrySpatial.ini` and `QuarrySpatial.log` from
+Delete `X3DAudio1_7.dll`, `QuarryEssentialAudio.ini` and `QuarryEssentialAudio.log` from
 `SMG026\Binaries\Win64`. The mod changes no game files; everything it does
 happens in memory while the game runs.
 

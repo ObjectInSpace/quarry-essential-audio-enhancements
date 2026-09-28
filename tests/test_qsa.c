@@ -1,4 +1,4 @@
-/* Offline tests for Quarry Spatial Audio. This exe plays the part of the game
+/* Offline tests for Essential Audio Enhancements for The Quarry. This exe plays the part of the game
  * (it exports stand-ins for the Wwise functions the mod calls).
  *
  *   test_qsa.exe <dll> <scenario>
@@ -78,7 +78,7 @@ static void device_name(IMMDevice *d, char *out, size_t n)
 static BOOL log_has(const char *dir, const char *text)
 {
     char path[MAX_PATH + 32], buf[16384];
-    snprintf(path, sizeof path, "%sQuarrySpatial.log", dir);
+    snprintf(path, sizeof path, "%sQuarryEssentialAudio.log", dir);
     FILE *f = fopen(path, "rb");
     if (!f) return FALSE;
     size_t n = fread(buf, 1, sizeof buf - 1, f);
@@ -146,7 +146,7 @@ int main(int argc, char **argv)
     }
 
     char ini[MAX_PATH + 32];
-    snprintf(ini, sizeof ini, "%sQuarrySpatial.ini", dir);
+    snprintf(ini, sizeof ini, "%sQuarryEssentialAudio.ini", dir);
     FILE *f = fopen(ini, "w");
     const char *out = !strcmp(mode, "layout51") || !strcmp(mode, "layout51no") ? "5.1"
                     : !strcmp(mode, "device") || !strcmp(mode, "nodevice") || !strcmp(mode, "nocomp") ? "auto" : mode;

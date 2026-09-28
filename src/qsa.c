@@ -1,4 +1,4 @@
-/* Quarry Spatial Audio -- surround and Windows spatial sound for The Quarry.
+/* Essential Audio Enhancements for The Quarry.
  * Copyright (C) 2026 ObjectInSpace
  *
  * This program is free software: you can redistribute it and/or modify it
@@ -36,7 +36,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#define QSA_VERSION "1.1.0"
+#define QSA_VERSION "1.2.0"
 
 static HMODULE g_self, g_game;
 static WCHAR g_dir[MAX_PATH];
@@ -55,7 +55,7 @@ static void qlog(const char *fmt, ...)
     buf[n++] = '\r';
     buf[n++] = '\n';
     WCHAR path[MAX_PATH];
-    _snwprintf(path, MAX_PATH, L"%lsQuarrySpatial.log", g_dir);
+    _snwprintf(path, MAX_PATH, L"%lsQuarryEssentialAudio.log", g_dir);
     EnterCriticalSection(&g_logcs);
     HANDLE f = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, NULL);
@@ -131,7 +131,7 @@ __declspec(dllexport) plan_t qsa_decide(request_t req, layout_t layout, BOOL spa
 
 static void ini_path(WCHAR *path)
 {
-    _snwprintf(path, MAX_PATH, L"%lsQuarrySpatial.ini", g_dir);
+    _snwprintf(path, MAX_PATH, L"%lsQuarryEssentialAudio.ini", g_dir);
 }
 
 static request_t read_request(char *raw, size_t n, layout_t *layout)
@@ -577,7 +577,7 @@ static void worker_body(void)
     WideCharToMultiByte(CP_UTF8, 0, want, -1, devu, sizeof devu, NULL, NULL);
     char rawc[16];
     BOOL no_compression = read_compression_off(rawc, sizeof rawc);
-    qlog("Quarry Spatial Audio %s. Output: %s. Device: %s. Compression: %s.", QSA_VERSION, raw,
+    qlog("Essential Audio Enhancements for The Quarry %s. Output: %s. Device: %s. Compression: %s.", QSA_VERSION, raw,
          want[0] ? devu : "Windows default", no_compression ? "off" : "on");
 
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -768,7 +768,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, void *r)
     if (slash) slash[1] = 0;
     else g_dir[0] = 0;
     WCHAR log[MAX_PATH];
-    _snwprintf(log, MAX_PATH, L"%lsQuarrySpatial.log", g_dir);
+    _snwprintf(log, MAX_PATH, L"%lsQuarryEssentialAudio.log", g_dir);
     DeleteFileW(log);
     /* COM is not allowed under the loader lock; the thread starts as soon as
      * it is released, seconds before the game starts its audio. */

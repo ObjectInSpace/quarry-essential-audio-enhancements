@@ -25,7 +25,7 @@ if ($Test) {
         if ($LASTEXITCODE) { $failed++ }
     }
     Pop-Location
-    Remove-Item "$root\build\QuarrySpatial.ini", "$root\build\QuarrySpatial.log" -ErrorAction SilentlyContinue
+    Remove-Item "$root\build\QuarryEssentialAudio.ini", "$root\build\QuarryEssentialAudio.log" -ErrorAction SilentlyContinue
     if ($failed) { throw "$failed test run(s) failed" }
     Write-Host "all tests passed"
 }
