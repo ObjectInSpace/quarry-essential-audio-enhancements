@@ -1,0 +1,5 @@
+EXPORTS
+    "?IsInitialized@SoundEngine@AK@@YA_NXZ" = fw_IsInitialized
+    "?GetSpeakerConfiguration@SoundEngine@AK@@YA?AUAkChannelConfig@@_K@Z" = fw_GetSpeakerConfiguration
+    "?GetPanningRule@SoundEngine@AK@@YA?AW4AKRESULT@@AEAW4AkPanningRule@@_K@Z" = fw_GetPanningRule
+    "?SetPanningRule@SoundEngine@AK@@YA?AW4AKRESULT@@W4AkPanningRule@@_K@Z" = fw_SetPanningRule

@@ -1,0 +1,7 @@
+LIBRARY X3DAudio1_7
+EXPORTS
+    X3DAudioCalculate @1
+    X3DAudioInitialize @2
+    qsa_decide
+    qsa_patch_gate_at
+    qsa_wait_setup
