@@ -3,8 +3,11 @@
  * WHAT THE GAME DOES. Almost all dialogue is positioned on the speaking
  * character, with the listener on the camera (measured in game, 2026-09/10),
  * but every distance setting ("attenuation") it uses spreads the voice over
- * 75% of the circle close up and 100% further away, and none makes it quieter
- * with distance. So voices sound wide and central from any angle and range.
+ * 60-100% of the circle, so voices sound wide and central from any angle.
+ * Volume does fall with distance, gently: the setting most dialogue uses is
+ * flat to 4.1 m, -4.3 dB at 9.7 m and -5.9 dB from 12.4 m; a few smaller
+ * groups reach -14 to -20 dB. (An earlier reading of the curves as plain dB
+ * said there was no falloff at all; see ENCODING.)
  *
  * WHAT THIS CHANGES. In the dialogue bank (Speech.bnk), each of the 32
  * attenuations used by a positioned voice -- listed with a fingerprint in

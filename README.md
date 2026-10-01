@@ -17,9 +17,10 @@ What the game does on its own:
   already, because its sound engine follows the device's hardware layout.
   (Not tested with such a device.)
 - Dialogue is placed on the speaking character, but every voice is spread
-  over most of the space around you (75% close up, all of it further away)
-  and is no quieter far away than close up. So you cannot tell where a voice
-  comes from or how far away it is. (Read from the game's sound data, and
+  over most of the space around you (75% close up, all of it further away),
+  so you cannot tell where a voice comes from. Most dialogue also stays at
+  full volume out to 4 metres and is at most 6 dB quieter further away, so
+  distance is hard to hear too. (Read from the game's sound data, and
   measured in game.)
 
 With this mod:
@@ -108,8 +109,8 @@ a moment before it switches.
 
 `Dialogue=` is `game` (the default) or `positional`.
 
-- `game` — dialogue as the game has it: wide and central, the same volume at
-  any distance.
+- `game` — dialogue as the game has it: wide and central, and only a little
+  quieter far away.
 - `positional` — each voice comes from its character, as seen from the
   camera, so a character on the left of the shot is heard on the left. Voices
   also get quieter and more muffled the further the camera is from the
