@@ -93,11 +93,23 @@ no, the mod says so in the log and uses the next best choice, so a wrong
 setting cannot leave the game silent.
 
 `Compression=` is `on` (the default) or `off`. The game runs its whole mix
-through a compressor on the way out (3:1 above −20 dB), which narrows the
-difference between loud and quiet moments. `off` removes it, for the game's
-full dynamic range. The limiter after it, which stops clipping, stays, and
-dialogue keeps its own separate levelling. The game's compression is gentle,
-so the difference is subtle.
+through a compressor on the way out (3:1 above −20 dB, so it acts on most of
+the mix), followed by a limiter at −1 dB. The mix is built to lean on them:
+several effect groups are turned up by 6 dB and the master by 2 dB. `off`
+removes the compressor, for the game's full dynamic range. The limiter stays,
+and dialogue keeps its own separate levelling.
+
+The difference is large, not subtle. Measured at the loudest moment found so
+far (a scripted scene), the compressor and limiter together take about 9 dB
+off the peak and about 6.5 dB off the loudness. Without the compressor that
+moment reaches about +8 dB over full scale, so with `off` **turn the game down
+by about 9 dB in the Windows volume mixer** and turn your speakers or
+headphones up to match. Otherwise the loudest moments distort.
+
+With 3D spatial sound, most positioned sounds (those in stereo and 3-channel
+layouts) do not pass through the master compressor and limiter even with
+`Compression=on`; only mono ones do. Turning the game down about 9 dB applies
+there too, and `off` makes all sounds behave the same way.
 
 `Device=` sets which output the game plays on. Leave it empty for the Windows
 default. Otherwise write part of the device's name, for example `iD4` or
