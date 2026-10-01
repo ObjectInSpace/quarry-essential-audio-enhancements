@@ -25,6 +25,7 @@
  *                   objects, as with spatial sound) come out in the summary
  *                   with the right peaks, counts, bus names and advice; the
  *                   last session's meter log kept as .prev
+ *     prevlog       the last session's log is kept as .prev
  *     meterbad      Meter=on, metering data not laid out as expected: the meter
  *                   stops and says so, and reads nothing further
  *
@@ -231,9 +232,9 @@ int main(int argc, char **argv)
     snprintf(ini, sizeof ini, "%sQuarryEssentialAudio.ini", dir);
     FILE *f = fopen(ini, "w");
     BOOL dlg = !strcmp(mode, "dialogue") || !strcmp(mode, "dialoguegame");
-    BOOL meter = !strcmp(mode, "meter") || !strcmp(mode, "meterbad");
+    BOOL meter = !strcmp(mode, "meter") || !strcmp(mode, "meterbad"), prevlog = !strcmp(mode, "prevlog");
     const char *out = !strcmp(mode, "layout51") || !strcmp(mode, "layout51no") ? "5.1"
-                    : !strcmp(mode, "device") || !strcmp(mode, "nodevice") || !strcmp(mode, "nocomp") || dlg || meter ? "auto" : mode;
+                    : !strcmp(mode, "device") || !strcmp(mode, "nodevice") || !strcmp(mode, "nocomp") || dlg || meter || prevlog ? "auto" : mode;
     fprintf(f, "[Audio]\nOutput=%s\n", out);
     if (!strcmp(mode, "dialogue")) fprintf(f, "Dialogue=positional\n");
     if (!strcmp(mode, "nocomp")) fprintf(f, "Compression=off\n");
@@ -243,7 +244,7 @@ int main(int argc, char **argv)
     fclose(f);
     SetEnvironmentVariableA("QSA_TEST_TARGET71", "1");
     if (!strcmp(mode, "auto") || !strcmp(mode, "headphones") || !strcmp(mode, "device") || !strcmp(mode, "nodevice") ||
-        !strcmp(mode, "nocomp") || dlg || meter)
+        !strcmp(mode, "nocomp") || dlg || meter || prevlog)
         SetEnvironmentVariableA("QSA_TEST_NOSPATIAL", "1");
     if (!strcmp(mode, "layout51no")) SetEnvironmentVariableA("QSA_TEST_REFUSE", "1");
 
@@ -255,11 +256,13 @@ int main(int argc, char **argv)
     DeleteFileA(stale);
     /* The last session's files, which the mod must keep as .prev (any .prev
      * from an earlier run removed first: it would answer the check). */
-    const char *prevs[] = { "QuarryEssentialAudio_meter.log.prev", "QuarryEssentialAudio_meter_summary.txt.prev" };
-    for (int i = 0; i < 2; i++) {
+    const char *prevs[] = { "QuarryEssentialAudio.log.prev", "QuarryEssentialAudio_meter.log.prev",
+                            "QuarryEssentialAudio_meter_summary.txt.prev" };
+    for (int i = 0; i < 3; i++) {
         snprintf(stale, sizeof stale, "%s%s", dir, prevs[i]);
         DeleteFileA(stale);
     }
+    write_file(dir, "QuarryEssentialAudio.log", "OLD SESSION LOG\r\n");
     write_file(dir, "QuarryEssentialAudio_meter.log", "OLD METER LOG\r\n");
     HMODULE m = LoadLibraryA(dll);
     if (!m) { printf("FAIL: cannot load %s\n", dll); return 1; }
@@ -417,6 +420,9 @@ int main(int argc, char **argv)
         CHECK(file_has(dir, "QuarryEssentialAudio_meter.log", "OVER 0"), "per-second log marks the over");
         CHECK(file_has(dir, "QuarryEssentialAudio_meter.log.prev", "OLD METER LOG") &&
               !file_has(dir, "QuarryEssentialAudio_meter.log", "OLD METER LOG"), "the last session's meter log kept as .prev");
+    } else if (prevlog) {
+        CHECK(file_has(dir, "QuarryEssentialAudio.log.prev", "OLD SESSION LOG") && !log_has(dir, "OLD SESSION LOG"),
+              "the last session's log kept as .prev, a new one started");
     } else if (!strcmp(mode, "meterbad")) {
         fw_initialized = 1;
         CHECK(wait_log(dir, "Level meter on", 3000) && fw_buscb, "meter registered");

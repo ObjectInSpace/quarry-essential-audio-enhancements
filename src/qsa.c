@@ -796,9 +796,10 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, void *r)
     WCHAR *slash = n ? wcsrchr(g_dir, L'\\') : NULL;
     if (slash) slash[1] = 0;
     else g_dir[0] = 0;
-    WCHAR log[MAX_PATH];
+    WCHAR log[MAX_PATH], prev[MAX_PATH];
     _snwprintf(log, MAX_PATH, L"%lsQuarryEssentialAudio.log", g_dir);
-    DeleteFileW(log);
+    _snwprintf(prev, MAX_PATH, L"%lsQuarryEssentialAudio.log.prev", g_dir);
+    MoveFileExW(log, prev, MOVEFILE_REPLACE_EXISTING);   /* the last session's log, kept once */
     /* COM is not allowed under the loader lock; the thread starts as soon as
      * it is released, seconds before the game starts its audio. */
     HANDLE t = CreateThread(NULL, 0, worker, NULL, 0, NULL);
