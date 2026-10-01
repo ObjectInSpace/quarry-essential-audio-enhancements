@@ -24,7 +24,7 @@ if ($Test) {
     Push-Location $root
     Remove-Item "$root\build\dialogue_patched.bnk" -ErrorAction SilentlyContinue
     foreach ($mode in 'auto', 'layout51', 'layout51no', 'mono', 'headphones', 'spatial', 'device', 'nodevice', 'nocomp',
-                      'dialogue', 'dialoguegame', 'meter', 'meterbad', 'prevlog') {
+                      'dialogue', 'dialoguegame', 'meter', 'meterbad', 'prevlog', 'volume', 'volup') {
         & "$root\build\test_qsa.exe" "$root\build\X3DAudio1_7.dll" $mode
         if ($LASTEXITCODE) { $failed++ }
     }

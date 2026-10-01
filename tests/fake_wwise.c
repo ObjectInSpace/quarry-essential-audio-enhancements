@@ -197,3 +197,23 @@ __attribute__((noinline)) int fw_RegisterBusMeteringCallback(uint32_t bus, void 
     return 1;
 }
 
+/* SetOutputVolume(output id, gain) records every call; GetOutputID(shareset,
+ * device) answers with a recognisable id built as Wwise builds them. */
+int fw_setoutvol_calls;
+uint64_t fw_setoutvol_id;
+float fw_setoutvol_gain;
+uint32_t fw_getoutid_args[2] = { 99, 99 };
+
+__attribute__((noinline)) int fw_SetOutputVolume(uint64_t id, float gain)
+{
+    fw_setoutvol_calls++;
+    fw_setoutvol_id = id;
+    fw_setoutvol_gain = gain;
+    return 1;
+}
+__attribute__((noinline)) uint64_t fw_GetOutputID(uint32_t shareset, uint32_t dev)
+{
+    fw_getoutid_args[0] = shareset;
+    fw_getoutid_args[1] = dev;
+    return ((uint64_t)dev << 32 | shareset) + 0x5000;   /* + a marker */
+}

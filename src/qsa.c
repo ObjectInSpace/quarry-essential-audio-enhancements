@@ -173,6 +173,28 @@ static BOOL read_compression_off(char *raw, size_t n)
     return FALSE;
 }
 
+/* Volume= in dB (0 = unchanged; it only turns the game down): the whole game,
+ * inside Wwise. Accepts "-9.2", "-9.2 dB" or "-9.2dB". */
+static double read_volume_db(void)
+{
+    WCHAR path[MAX_PATH], v[32], *end;
+    ini_path(path);
+    GetPrivateProfileStringW(L"Audio", L"Volume", L"0", v, 32, path);
+    double d = wcstod(v, &end);
+    while (*end == L' ') end++;
+    if (!_wcsnicmp(end, L"dB", 2)) end += 2;
+    while (*end == L' ') end++;
+    if (end == v || *end) {
+        qlog("Unknown Volume value; the volume stays as it is. Write a number of dB, for example -9.");
+        return 0;
+    }
+    if (d > 0) {
+        qlog("Volume can only turn the game down; it stays as it is.");
+        return 0;
+    }
+    return d < -96 ? -96 : d;
+}
+
 static void read_device(WCHAR *out, int n)
 {
     WCHAR path[MAX_PATH];
@@ -395,6 +417,10 @@ typedef int (*pfn_setpan)(int, uint64_t);
  * AkChannelConfig. Shareset 0 = Wwise's standard system output. */
 typedef struct { uint32_t shareset, device_id, panning, channels; } ak_output_settings_t;
 typedef int (*pfn_replaceout)(const ak_output_settings_t *, uint64_t, uint64_t *);
+/* SetOutputVolume(output id, linear gain); GetOutputID(shareset, device id).
+ * An output id is the device id in the high 32 bits and the shareset below. */
+typedef int (*pfn_setoutvol)(uint64_t, float);
+typedef uint64_t (*pfn_getoutid)(uint32_t, uint32_t);
 /* SetBusEffect(bus id, effect slot, effect shareset id; 0 = empty the slot). */
 typedef int (*pfn_setbusfx)(uint32_t, uint32_t, uint32_t);
 /* From the game's Init.bnk: the Master Audio Bus (the last stage of the mix)
@@ -424,8 +450,17 @@ static void cfg_name(uint32_t v, char *out, size_t n)
  * chosen, rebuild its main output (id 0) once with ReplaceOutput; set
  * headphone panning. wwise_dev = Wwise's id for the chosen device, 0 for the
  * Windows default. */
-static void wwise_followup(BOOL headphone_pan, BOOL mono, uint32_t wwise_dev, BOOL no_compression)
+static void wwise_followup(BOOL headphone_pan, BOOL mono, uint32_t wwise_dev, BOOL no_compression, double vol_db)
 {
+    pfn_setoutvol setoutvol = (pfn_setoutvol)(void *)GetProcAddress(g_game,
+        "?SetOutputVolume@SoundEngine@AK@@YA?AW4AKRESULT@@_KM@Z");
+    pfn_getoutid getoutid = (pfn_getoutid)(void *)GetProcAddress(g_game, "?GetOutputID@SoundEngine@AK@@YA_KII@Z");
+    BOOL vol_on = vol_db < 0;
+    float vol_gain = (float)pow(10.0, vol_db / 20.0);
+    if (vol_on && !setoutvol) {
+        qlog("Could not find Wwise's SetOutputVolume in the game; the Volume setting does nothing.");
+        vol_on = FALSE;
+    }
     BOOL replace = mono || wwise_dev;
     pfn_setbusfx setbusfx = (pfn_setbusfx)(void *)GetProcAddress(g_game,
         "?SetBusEffect@SoundEngine@AK@@YA?AW4AKRESULT@@III@Z");
@@ -513,7 +548,20 @@ static void wwise_followup(BOOL headphone_pan, BOOL mono, uint32_t wwise_dev, BO
                             : "Wwise refused to remove the master limiter (result %d).", r);
         }
         if (meter_pending && (i - ready_at) % 4 == 0) meter_pending = !meter_try_register();
-        if (i - ready_at >= (no_compression || limiter_off || meter_pending ? 120 : 40)) break;
+        /* Volume=: turn the whole output down inside Wwise, before Windows'
+         * spatial renderer, which adds about 9 dB at the loudest moment
+         * measured; the Windows volume mixer comes after it, too late. Repeated
+         * every 2 s for the first minute, since Wwise rebuilds its output when
+         * spatial sound starts (measured: the cut then holds all session). */
+        if (vol_on && (i - ready_at) % 4 == 0) {
+            uint64_t id = getoutid ? getoutid(0, wwise_dev) : (uint64_t)wwise_dev << 32;
+            int r = setoutvol(id, vol_gain);
+            if (i == ready_at)
+                qlog(r == 1 ? "Turned the whole game down by %.1f dB inside Wwise (output %llu)."
+                            : "Wwise refused the volume (%.1f dB, output %llu, result %d).",
+                     -vol_db, (unsigned long long)id, r);
+        }
+        if (i - ready_at >= (no_compression || limiter_off || meter_pending || vol_on ? 120 : 40)) break;
     }
 }
 
@@ -600,8 +648,9 @@ static void worker_body(void)
     WideCharToMultiByte(CP_UTF8, 0, want, -1, devu, sizeof devu, NULL, NULL);
     char rawc[16];
     BOOL no_compression = read_compression_off(rawc, sizeof rawc);
-    qlog("Essential Audio Enhancements for The Quarry %s. Output: %s. Device: %s. Compression: %s. Dialogue: %s.",
-         QSA_VERSION, raw, want[0] ? devu : "Windows default", no_compression ? "off" : "on",
+    double vol_db = read_volume_db();
+    qlog("Essential Audio Enhancements for The Quarry %s. Output: %s. Device: %s. Compression: %s. Volume: %.1f dB. Dialogue: %s.",
+         QSA_VERSION, raw, want[0] ? devu : "Windows default", no_compression ? "off" : "on", vol_db,
          g_dlg.positional ? "positional" : "game");
     dialogue_report();
     meter_read_settings();
@@ -724,7 +773,7 @@ out:
     if (en) IMMDeviceEnumerator_Release(en);
     InterlockedExchange(&g_setup_done, 1);
     if (dev) {
-        wwise_followup(p.headphone_pan, p.mono, wwise_dev, no_compression);
+        wwise_followup(p.headphone_pan, p.mono, wwise_dev, no_compression, vol_db);
         IMMDevice_Release(dev);
     }
 }

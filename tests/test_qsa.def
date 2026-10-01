@@ -11,3 +11,5 @@ EXPORTS
     "?LoadBankMemoryCopy@SoundEngine@AK@@YA?AW4AKRESULT@@PEBXIAEAI@Z" = fw_LoadBankMemoryCopy
     "?m_pStreamMgr@IAkStreamMgr@AK@@1PEAV12@EA" = fw_stream_mgr_ptr DATA
     "?RegisterBusMeteringCallback@SoundEngine@AK@@YA?AW4AKRESULT@@IP6AXPEAUAkBusMeteringCallbackInfo@@@ZW4AkMeteringFlags@@PEAX@Z" = fw_RegisterBusMeteringCallback
+    "?SetOutputVolume@SoundEngine@AK@@YA?AW4AKRESULT@@_KM@Z" = fw_SetOutputVolume
+    "?GetOutputID@SoundEngine@AK@@YA_KII@Z" = fw_GetOutputID

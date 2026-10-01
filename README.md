@@ -103,13 +103,25 @@ The difference is large, not subtle. Measured at the loudest moment found so
 far (a scripted scene), the compressor and limiter together take about 9 dB
 off the peak and about 6.5 dB off the loudness. Without the compressor that
 moment reaches about +8 dB over full scale, so with `off` **turn the game down
-by about 9 dB in the Windows volume mixer** and turn your speakers or
-headphones up to match. Otherwise the loudest moments distort.
+with `Volume=`** (below) and turn your speakers or headphones up to match.
+Otherwise the loudest moments distort.
 
 With 3D spatial sound, most positioned sounds (those in stereo and 3-channel
-layouts) do not pass through the master compressor and limiter even with
-`Compression=on`; only mono ones do. Turning the game down about 9 dB applies
-there too, and `off` makes all sounds behave the same way.
+layouts) do not pass through the master compressor or limiter even with
+`Compression=on`; the compressor still acts on mono ones, and the limiter on
+none. `off` makes all sounds behave the same way.
+
+`Volume=` turns the whole game down inside its sound engine, in dB: `0` (the
+default) leaves it as it is, and it cannot turn the game up. With
+`Compression=off`, these keep the loudest moment measured at or below −1 dB:
+
+- stereo (and other speaker layouts): `Volume=-9.2`
+- 3D spatial sound: `Volume=-18.5`
+
+Spatial sound needs more because Windows' 3D processing, which comes after the
+game, adds about 9 dB when many sounds overlap. For the same reason the Windows
+volume mixer cannot prevent distortion with spatial sound: it acts after that
+point. `Volume=` acts before it.
 
 `Device=` sets which output the game plays on. Leave it empty for the Windows
 default. Otherwise write part of the device's name, for example `iD4` or
@@ -238,6 +250,12 @@ For modders and the curious.
   calls Wwise's exported `SetBusEffect` to empty the compressor's slot on that
   bus. Measured in the game, Wwise terminates the compressor within 80 ms of
   the request, and it stays gone for the session.
+- **Volume.** `Volume=` calls Wwise's exported `SetOutputVolume` on the main
+  output (its id from `GetOutputID`), as a linear gain, every 2 s for the
+  first minute while Wwise sets up its output. Measured in the game, the cut
+  then holds for the whole session. With spatial sound, a recording of the
+  device at `Volume=-18` peaked at −0.45 dB in the loudest scene, while the
+  loudest single sound left Wwise at about −10 dB.
 - **Positional dialogue.** The game's dialogue sound bank (`Speech.bnk`)
   already places each voice on its character, with the listener on the
   camera; what blurs it is the distance settings ("attenuations") those

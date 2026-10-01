@@ -26,6 +26,9 @@
  *                   with the right peaks, counts, bus names and advice; the
  *                   last session's meter log kept as .prev
  *     prevlog       the last session's log is kept as .prev
+ *     volume        Volume=-9.2 dB: the cut sent to the main output's id as a
+ *                   linear gain, nothing before Wwise runs, and sent again
+ *     volup         Volume=+3: refused (it only turns down), nothing sent
  *     meterbad      Meter=on, metering data not laid out as expected: the meter
  *                   stops and says so, and reads nothing further
  *
@@ -67,6 +70,10 @@ extern uint32_t fw_buscb_bus, fw_buscb_flags;
 extern int fw_regbus_calls, fw_master_regs;
 extern void *fw_sfxcb, *fw_sfxcookie;
 extern uint32_t fw_sfx_flags;
+extern int fw_setoutvol_calls;
+extern uint64_t fw_setoutvol_id;
+extern float fw_setoutvol_gain;
+extern uint32_t fw_getoutid_args[2];
 
 static void write_file(const char *dir, const char *name, const char *text)
 {
@@ -232,19 +239,22 @@ int main(int argc, char **argv)
     snprintf(ini, sizeof ini, "%sQuarryEssentialAudio.ini", dir);
     FILE *f = fopen(ini, "w");
     BOOL dlg = !strcmp(mode, "dialogue") || !strcmp(mode, "dialoguegame");
-    BOOL meter = !strcmp(mode, "meter") || !strcmp(mode, "meterbad"), prevlog = !strcmp(mode, "prevlog");
+    BOOL meter = !strcmp(mode, "meter") || !strcmp(mode, "meterbad"), prevlog = !strcmp(mode, "prevlog"),
+         vol = !strcmp(mode, "volume") || !strcmp(mode, "volup");
     const char *out = !strcmp(mode, "layout51") || !strcmp(mode, "layout51no") ? "5.1"
-                    : !strcmp(mode, "device") || !strcmp(mode, "nodevice") || !strcmp(mode, "nocomp") || dlg || meter || prevlog ? "auto" : mode;
+                    : !strcmp(mode, "device") || !strcmp(mode, "nodevice") || !strcmp(mode, "nocomp") || dlg || meter || prevlog || vol ? "auto" : mode;
     fprintf(f, "[Audio]\nOutput=%s\n", out);
     if (!strcmp(mode, "dialogue")) fprintf(f, "Dialogue=positional\n");
     if (!strcmp(mode, "nocomp")) fprintf(f, "Compression=off\n");
     if (!strcmp(mode, "device")) fprintf(f, "Device=%s\n", other_name);
     if (!strcmp(mode, "nodevice")) fprintf(f, "Device=zz no such device zz\n");
+    if (!strcmp(mode, "volume")) fprintf(f, "Volume=-9.2 dB\n");
+    if (!strcmp(mode, "volup")) fprintf(f, "Volume=3\n");
     if (meter) fprintf(f, "[Measure]\nMeter=on\n%s", !strcmp(mode, "meter") ? "Limiter=off\n" : "");
     fclose(f);
     SetEnvironmentVariableA("QSA_TEST_TARGET71", "1");
     if (!strcmp(mode, "auto") || !strcmp(mode, "headphones") || !strcmp(mode, "device") || !strcmp(mode, "nodevice") ||
-        !strcmp(mode, "nocomp") || dlg || meter || prevlog)
+        !strcmp(mode, "nocomp") || dlg || meter || prevlog || vol)
         SetEnvironmentVariableA("QSA_TEST_NOSPATIAL", "1");
     if (!strcmp(mode, "layout51no")) SetEnvironmentVariableA("QSA_TEST_REFUSE", "1");
 
@@ -363,6 +373,7 @@ int main(int argc, char **argv)
         Sleep(700);
         CHECK(!fw_replace_calls && !fw_setpan_calls, "output not rebuilt, panning left alone");
         CHECK(!fw_setbusfx_calls && log_has(dir, "Compression: on."), "compression left on by default");
+        CHECK(!fw_setoutvol_calls && log_has(dir, "Volume: 0.0 dB."), "volume left alone by default");
     } else if (!strcmp(mode, "nocomp")) {
         CHECK(log_has(dir, "Compression: off."), "setting read");
         CHECK(!fw_setbusfx_calls, "nothing sent before Wwise is running");
@@ -420,6 +431,25 @@ int main(int argc, char **argv)
         CHECK(file_has(dir, "QuarryEssentialAudio_meter.log", "OVER 0"), "per-second log marks the over");
         CHECK(file_has(dir, "QuarryEssentialAudio_meter.log.prev", "OLD METER LOG") &&
               !file_has(dir, "QuarryEssentialAudio_meter.log", "OLD METER LOG"), "the last session's meter log kept as .prev");
+    } else if (!strcmp(mode, "volume")) {
+        CHECK(log_has(dir, "Volume: -9.2 dB."), "setting read, with its dB unit");
+        CHECK(!fw_setoutvol_calls, "nothing sent before Wwise is running");
+        fw_initialized = 1;
+        float cut = 0.346737f;   /* 10^(-9.2/20) */
+        CHECK(wait_log(dir, "Turned the whole game down by 9.2 dB inside Wwise (output 20480).", 3000) &&
+              fw_getoutid_args[0] == 0 && fw_getoutid_args[1] == 0 && fw_setoutvol_id == 0x5000 &&
+              fw_setoutvol_gain > cut - 0.0001f && fw_setoutvol_gain < cut + 0.0001f,
+              "SetOutputVolume(%llu, %.6f): the id GetOutputID(%u, %u) gave, a linear gain of -9.2 dB",
+              (unsigned long long)fw_setoutvol_id, fw_setoutvol_gain, fw_getoutid_args[0], fw_getoutid_args[1]);
+        int first = fw_setoutvol_calls;
+        Sleep(2600);
+        CHECK(fw_setoutvol_calls > first && fw_setoutvol_gain > cut - 0.0001f && fw_setoutvol_gain < cut + 0.0001f,
+              "sent again while Wwise settles (%d calls), always the cut", fw_setoutvol_calls);
+    } else if (!strcmp(mode, "volup")) {
+        CHECK(log_has(dir, "Volume can only turn the game down; it stays as it is."), "a boost refused and logged");
+        fw_initialized = 1;
+        Sleep(2500);
+        CHECK(!fw_setoutvol_calls, "nothing sent (%d calls)", fw_setoutvol_calls);
     } else if (prevlog) {
         CHECK(file_has(dir, "QuarryEssentialAudio.log.prev", "OLD SESSION LOG") && !log_has(dir, "OLD SESSION LOG"),
               "the last session's log kept as .prev, a new one started");
