@@ -170,3 +170,30 @@ __attribute__((noinline)) int fw_LoadBankMemoryCopy(const void *p, uint32_t size
     memcpy(out, (const unsigned char *)p + 12, 4);
     return 1;
 }
+
+/* Metering ([Measure] Meter=on): RegisterBusMeteringCallback records the
+ * callback, as Wwise does;
+ * the test then plays Wwise's audio thread by calling it with frames built
+ * from fw_meter objects, laid out as the SDK's IAkMetering (an MSVC vtable:
+ * slot 0 the destructor, then GetPeak, GetTruePeak, GetRMS, GetKWeightedPower). */
+typedef struct { void **vt; float peak[16], tp[16], rms[16], k; } fw_meter;
+static void fw_m_dtor(fw_meter *m) { (void)m; }
+static const float *fw_m_peak(fw_meter *m) { return m->peak; }
+static const float *fw_m_tp(fw_meter *m) { return m->tp; }
+static const float *fw_m_rms(fw_meter *m) { return m->rms; }
+static float fw_m_k(fw_meter *m) { return m->k; }
+void *fw_meter_vt[5] = { (void *)fw_m_dtor, (void *)fw_m_peak, (void *)fw_m_tp, (void *)fw_m_rms, (void *)fw_m_k };
+
+void *fw_buscb, *fw_sfxcb, *fw_sfxcookie;
+uint32_t fw_buscb_bus, fw_buscb_flags, fw_sfx_flags;
+int fw_regbus_calls, fw_master_regs;
+
+/* Records the master bus's registration, and the SFX bus's (393239870). */
+__attribute__((noinline)) int fw_RegisterBusMeteringCallback(uint32_t bus, void *cb, uint32_t flags, void *cookie)
+{
+    fw_regbus_calls++;
+    if (bus == 3803692087u) { fw_master_regs++; fw_buscb = cb; fw_buscb_bus = bus; fw_buscb_flags = flags; }
+    if (bus == 393239870u) { fw_sfxcb = cb; fw_sfxcookie = cookie; fw_sfx_flags = flags; }
+    return 1;
+}
+

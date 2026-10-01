@@ -20,6 +20,13 @@
  *                   written to build\dialogue_patched.bnk for
  *                   tools\check_dialogue_bank.py
  *     dialoguegame  no Dialogue setting: the game's own dialogue, nothing read
+ *     meter         [Measure] Meter=on, Limiter=off: the limiter slot emptied;
+ *                   every bus metered; known readings (stereo plus mono
+ *                   objects, as with spatial sound) come out in the summary
+ *                   with the right peaks, counts, bus names and advice; the
+ *                   last session's meter log kept as .prev
+ *     meterbad      Meter=on, metering data not laid out as expected: the meter
+ *                   stops and says so, and reads nothing further
  *
  * Every scenario also checks the X3DAudio pass-through, the decision table
  * and the patch verification. */
@@ -54,6 +61,60 @@ extern int fw_stream_fail, fw_open_calls, fw_open_lang_first, fw_streams_open, f
 extern int fw_lbw_calls, fw_lba_calls, fw_lbcopy_calls;
 extern unsigned char *fw_lbcopy_data;
 extern uint32_t fw_lbcopy_size;
+extern void *fw_meter_vt[5], *fw_buscb;
+extern uint32_t fw_buscb_bus, fw_buscb_flags;
+extern int fw_regbus_calls, fw_master_regs;
+extern void *fw_sfxcb, *fw_sfxcookie;
+extern uint32_t fw_sfx_flags;
+
+static void write_file(const char *dir, const char *name, const char *text)
+{
+    char path[MAX_PATH + 64];
+    snprintf(path, sizeof path, "%s%s", dir, name);
+    FILE *f = fopen(path, "wb");
+    if (f) { fputs(text, f); fclose(f); }
+}
+
+/* The SDK's metering structures (AkCallback.h, Wwise 2021.1), written out
+ * from the header, not from the mod. */
+typedef struct { void **vt; float peak[16], tp[16], rms[16], k; } fw_meter;
+typedef struct { void *pCookie; uint64_t gameObjID; void *pMetering; uint32_t channelConfig, eMeteringFlags; } sdk_bus_info;
+typedef void (*pfn_buscb)(sdk_bus_info *);
+
+/* Channel 1 carries the given levels, channel 0 half of them. */
+static void fw_meter_set(fw_meter *m, int nch, float peak, float tp, float rms, float k)
+{
+    m->vt = fw_meter_vt;
+    for (int c = 0; c < nch; c++) {
+        float g = nch > 1 && c == 0 ? 0.5f : 1.0f;
+        m->peak[c] = peak * g;
+        m->tp[c] = tp * g;
+        m->rms[c] = rms;
+    }
+    m->k = k;
+}
+
+static BOOL file_has(const char *dir, const char *name, const char *text)
+{
+    char path[MAX_PATH + 64], buf[16384];
+    snprintf(path, sizeof path, "%s%s", dir, name);
+    FILE *f = fopen(path, "rb");
+    if (!f) return FALSE;
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    return strstr(buf, text) != NULL;
+}
+
+static BOOL wait_file(const char *dir, const char *name, const char *text, DWORD ms)
+{
+    ULONGLONG end = GetTickCount64() + ms;
+    while (GetTickCount64() < end) {
+        if (file_has(dir, name, text)) return TRUE;
+        Sleep(50);
+    }
+    return file_has(dir, name, text);
+}
 
 static uint32_t ak_hash(const char *s)
 {
@@ -170,20 +231,36 @@ int main(int argc, char **argv)
     snprintf(ini, sizeof ini, "%sQuarryEssentialAudio.ini", dir);
     FILE *f = fopen(ini, "w");
     BOOL dlg = !strcmp(mode, "dialogue") || !strcmp(mode, "dialoguegame");
+    BOOL meter = !strcmp(mode, "meter") || !strcmp(mode, "meterbad");
     const char *out = !strcmp(mode, "layout51") || !strcmp(mode, "layout51no") ? "5.1"
-                    : !strcmp(mode, "device") || !strcmp(mode, "nodevice") || !strcmp(mode, "nocomp") || dlg ? "auto" : mode;
+                    : !strcmp(mode, "device") || !strcmp(mode, "nodevice") || !strcmp(mode, "nocomp") || dlg || meter ? "auto" : mode;
     fprintf(f, "[Audio]\nOutput=%s\n", out);
     if (!strcmp(mode, "dialogue")) fprintf(f, "Dialogue=positional\n");
     if (!strcmp(mode, "nocomp")) fprintf(f, "Compression=off\n");
     if (!strcmp(mode, "device")) fprintf(f, "Device=%s\n", other_name);
     if (!strcmp(mode, "nodevice")) fprintf(f, "Device=zz no such device zz\n");
+    if (meter) fprintf(f, "[Measure]\nMeter=on\n%s", !strcmp(mode, "meter") ? "Limiter=off\n" : "");
     fclose(f);
     SetEnvironmentVariableA("QSA_TEST_TARGET71", "1");
     if (!strcmp(mode, "auto") || !strcmp(mode, "headphones") || !strcmp(mode, "device") || !strcmp(mode, "nodevice") ||
-        !strcmp(mode, "nocomp") || dlg)
+        !strcmp(mode, "nocomp") || dlg || meter)
         SetEnvironmentVariableA("QSA_TEST_NOSPATIAL", "1");
     if (!strcmp(mode, "layout51no")) SetEnvironmentVariableA("QSA_TEST_REFUSE", "1");
 
+    /* A summary left by an earlier run would answer the checks below. */
+    char stale[MAX_PATH + 64];
+    snprintf(stale, sizeof stale, "%sQuarryEssentialAudio_meter_summary.txt", dir);
+    DeleteFileA(stale);
+    snprintf(stale, sizeof stale, "%sQuarryEssentialAudio_meter.log", dir);
+    DeleteFileA(stale);
+    /* The last session's files, which the mod must keep as .prev (any .prev
+     * from an earlier run removed first: it would answer the check). */
+    const char *prevs[] = { "QuarryEssentialAudio_meter.log.prev", "QuarryEssentialAudio_meter_summary.txt.prev" };
+    for (int i = 0; i < 2; i++) {
+        snprintf(stale, sizeof stale, "%s%s", dir, prevs[i]);
+        DeleteFileA(stale);
+    }
+    write_file(dir, "QuarryEssentialAudio_meter.log", "OLD METER LOG\r\n");
     HMODULE m = LoadLibraryA(dll);
     if (!m) { printf("FAIL: cannot load %s\n", dll); return 1; }
     pfn_decide decide = (pfn_decide)(void *)GetProcAddress(m, "qsa_decide");
@@ -294,6 +371,66 @@ int main(int argc, char **argv)
         Sleep(2600);
         CHECK(fw_setbusfx_calls >= 2 && fw_setbusfx_args[1] == 0, "repeated while the bank loads (%d calls), always slot 0",
               fw_setbusfx_calls);
+    } else if (!strcmp(mode, "meter")) {
+        CHECK(log_has(dir, "Measuring: level meter on, limiter OFF"), "settings read and logged");
+        CHECK(!fw_setbusfx_calls && !fw_regbus_calls, "nothing sent before Wwise is running");
+        fw_initialized = 1;
+        CHECK(wait_log(dir, "Asked Wwise to remove the master limiter (for measuring only).", 3000) &&
+              fw_setbusfx_args[0] == 3803692087u && fw_setbusfx_args[1] == 1 && fw_setbusfx_args[2] == 0,
+              "SetBusEffect(%u, slot %u, %u): Master Audio Bus, limiter slot emptied",
+              fw_setbusfx_args[0], fw_setbusfx_args[1], fw_setbusfx_args[2]);
+        CHECK(wait_log(dir, "Level meter on (master bus and 89 other buses)", 3000) && fw_buscb,
+              "the master and the 89 other buses registered");
+        CHECK(fw_master_regs == 1 && fw_regbus_calls == 90, "the master registered once (a second would replace it): %d of %d",
+              fw_master_regs, fw_regbus_calls);
+        CHECK(fw_buscb_flags == (1 | 2 | 4 | 16) && fw_sfx_flags == 1,
+              "master: peak, true peak, RMS, K power; other buses: peak");
+        /* Wwise's audio thread, as measured with spatial sound: each frame, one
+         * stereo reading and one per mono object (two here). 46 frames; the
+         * stereo one is quiet except one frame at +3 dBTP and five at the -1 dB
+         * ceiling; one mono object reaches +8 dBTP once. */
+        static fw_meter bm, ob, sfx;
+        sdk_bus_info bi = { NULL, 0, &bm, 0x3102, 1 | 2 | 4 | 16 };
+        sdk_bus_info obi = { NULL, 0, &ob, 0x4101, 1 | 2 | 4 | 16 };
+        sdk_bus_info si = { fw_sfxcookie, 0, &sfx, 0x3102, 1 };
+        fw_meter_set(&sfx, 2, 0.5f, 0, 0, 0);         /* SFX bus: -6 dBFS */
+        for (int i = 0; i < 46; i++) {
+            float tp = i == 20 ? 1.41254f : i >= 30 && i < 35 ? 0.89125f : 0.25f;
+            fw_meter_set(&bm, 2, tp * 0.9f, tp, tp * 0.3f, i == 20 ? 0.5f : 0.01f);
+            ((pfn_buscb)fw_buscb)(&bi);
+            for (int k = 0; k < 2; k++) {
+                float otp = i == 25 && k == 1 ? 2.51189f : 0.1f;   /* +8 dBTP */
+                fw_meter_set(&ob, 1, otp, otp, otp, 9.0f);       /* big K power: must not count */
+                ((pfn_buscb)fw_buscb)(&obi);
+            }
+            ((pfn_buscb)fw_sfxcb)(&si);
+        }
+        const char *sum = "QuarryEssentialAudio_meter_summary.txt";
+        CHECK(wait_file(dir, sum, "  138 readings", 8000), "every reading counted (positive count)");
+        CHECK(file_has(dir, sum, "stereo (0x3102): 46 readings; loudest true peak +3.0 dBTP, sample peak +2.1 dBFS;"
+                                 " at or above -1.1 dBTP 6, over 0 dBTP 1"), "stereo on its own: peaks from the right slots, counts");
+        CHECK(file_has(dir, sum, "mono (0x4101): 92 readings; loudest true peak +8.0 dBTP"), "objects kept apart by layout");
+        CHECK(file_has(dir, sum, "loudest momentary loudness (widest layout) -15.2 LUFS"),
+              "loudness from the widest layout only (19-reading mean around the +3 dB one)");
+        CHECK(file_has(dir, sum, "  -6.0 dBFS  SFX [Master Audio Bus]"), "a bus named, with its parent, from the cookie");
+        CHECK(file_has(dir, sum, "turn the game down by 9.0 dB"), "advice from the loudest reading (object +8.0 => 9.0 dB)");
+        CHECK(file_has(dir, "QuarryEssentialAudio_meter.log", "OVER 0"), "per-second log marks the over");
+        CHECK(file_has(dir, "QuarryEssentialAudio_meter.log.prev", "OLD METER LOG") &&
+              !file_has(dir, "QuarryEssentialAudio_meter.log", "OLD METER LOG"), "the last session's meter log kept as .prev");
+    } else if (!strcmp(mode, "meterbad")) {
+        fw_initialized = 1;
+        CHECK(wait_log(dir, "Level meter on", 3000) && fw_buscb, "meter registered");
+        CHECK(!fw_setbusfx_calls, "limiter left alone when only the meter is on");
+        static fw_meter bm;
+        fw_meter_set(&bm, 2, 0.5f, 0.5f, 0.1f, 0.01f);
+        sdk_bus_info bad = { NULL, 0, &bm, 0x3102, 1 };   /* flags not what the mod asked for */
+        ((pfn_buscb)fw_buscb)(&bad);
+        sdk_bus_info good = { NULL, 0, &bm, 0x3102, 1 | 2 | 4 | 16 };
+        ((pfn_buscb)fw_buscb)(&good);
+        CHECK(wait_log(dir, "Level meter stopped: the master bus's metering data did not have the expected layout.", 4000),
+              "stopped and logged");
+        CHECK(wait_file(dir, "QuarryEssentialAudio_meter_summary.txt", "no data: Wwise never called the master bus meter.", 3000),
+              "nothing read after stopping, even good frames");
     } else if (!strcmp(mode, "layout51")) {
         IAudioClient *ac = NULL;
         WAVEFORMATEX *closest = NULL;

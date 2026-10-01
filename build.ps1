@@ -24,7 +24,7 @@ if ($Test) {
     Push-Location $root
     Remove-Item "$root\build\dialogue_patched.bnk" -ErrorAction SilentlyContinue
     foreach ($mode in 'auto', 'layout51', 'layout51no', 'mono', 'headphones', 'spatial', 'device', 'nodevice', 'nocomp',
-                      'dialogue', 'dialoguegame') {
+                      'dialogue', 'dialoguegame', 'meter', 'meterbad') {
         & "$root\build\test_qsa.exe" "$root\build\X3DAudio1_7.dll" $mode
         if ($LASTEXITCODE) { $failed++ }
     }
@@ -37,7 +37,7 @@ if ($Test) {
         if ($LASTEXITCODE) { $failed++ }
     }
     Pop-Location
-    Remove-Item "$root\build\QuarryEssentialAudio.ini", "$root\build\QuarryEssentialAudio.log" -ErrorAction SilentlyContinue
+    Remove-Item "$root\build\QuarryEssentialAudio.ini", "$root\build\QuarryEssentialAudio.log", "$root\build\QuarryEssentialAudio_meter.log", "$root\build\QuarryEssentialAudio_meter_summary.txt", "$root\build\*.prev" -ErrorAction SilentlyContinue
     if ($failed) { throw "$failed test run(s) failed" }
     Write-Host "all tests passed"
 }

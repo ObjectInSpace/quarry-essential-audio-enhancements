@@ -39,6 +39,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 
 #define QSA_VERSION "1.2.0"
 
@@ -404,6 +405,9 @@ typedef int (*pfn_setbusfx)(uint32_t, uint32_t, uint32_t);
 #define MASTER_COMPRESSOR_SLOT 0u
 #define AKCFG_MONO 0x00004101u   /* 1 ch, standard, front centre */
 
+/* ---- level meter and Limiter=off ([Measure]) ---- */
+#include "meter.c"
+
 static void cfg_name(uint32_t v, char *out, size_t n)
 {
     unsigned ch = v & 0xff, type = (v >> 8) & 0xf, mask = v >> 12;
@@ -425,9 +429,10 @@ static void wwise_followup(BOOL headphone_pan, BOOL mono, uint32_t wwise_dev, BO
     BOOL replace = mono || wwise_dev;
     pfn_setbusfx setbusfx = (pfn_setbusfx)(void *)GetProcAddress(g_game,
         "?SetBusEffect@SoundEngine@AK@@YA?AW4AKRESULT@@III@Z");
-    if (no_compression && !setbusfx) {
-        qlog("Could not find Wwise's SetBusEffect in the game; compression stays on.");
-        no_compression = FALSE;
+    BOOL limiter_off = g_meter.limiter_off, meter_pending = g_meter.on;
+    if ((no_compression || limiter_off) && !setbusfx) {
+        qlog("Could not find Wwise's SetBusEffect in the game; compression and the limiter stay on.");
+        no_compression = limiter_off = FALSE;
     }
     pfn_replaceout replaceout = (pfn_replaceout)(void *)GetProcAddress(g_game,
         "?ReplaceOutput@SoundEngine@AK@@YA?AW4AKRESULT@@AEBUAkOutputSettings@@_KPEA_K@Z");
@@ -500,7 +505,15 @@ static void wwise_followup(BOOL headphone_pan, BOOL mono, uint32_t wwise_dev, BO
                 qlog(r == 1 ? "Asked Wwise to remove the master compressor (the limiter stays)."
                             : "Wwise refused to remove the master compressor (result %d).", r);
         }
-        if (i - ready_at >= (no_compression ? 120 : 40)) break;
+        /* [Measure] Limiter=off: the same, for the limiter in slot 1. */
+        if (limiter_off && (i - ready_at) % 4 == 0) {
+            int r = setbusfx(AK_MASTER_BUS_ID, MASTER_LIMITER_SLOT, 0);
+            if (i == ready_at)
+                qlog(r == 1 ? "Asked Wwise to remove the master limiter (for measuring only)."
+                            : "Wwise refused to remove the master limiter (result %d).", r);
+        }
+        if (meter_pending && (i - ready_at) % 4 == 0) meter_pending = !meter_try_register();
+        if (i - ready_at >= (no_compression || limiter_off || meter_pending ? 120 : 40)) break;
     }
 }
 
@@ -591,6 +604,10 @@ static void worker_body(void)
          QSA_VERSION, raw, want[0] ? devu : "Windows default", no_compression ? "off" : "on",
          g_dlg.positional ? "positional" : "game");
     dialogue_report();
+    meter_read_settings();
+    if (g_meter.on || g_meter.limiter_off)
+        qlog("Measuring: level meter %s, limiter %s.", g_meter.on ? "on" : "off",
+             g_meter.limiter_off ? "OFF (for measuring only; the game can clip)" : "on");
 
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) { qlog("Could not start COM; doing nothing."); return; }
