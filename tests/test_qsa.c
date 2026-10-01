@@ -12,6 +12,14 @@
  *     device        Device=<another active output>: detection, widening and
  *                   the rebuilt output all use that device
  *     nodevice      Device=<no match>: devices listed, default kept
+ *     dialogue      Dialogue=positional: the game's own load whenever the
+ *                   dialogue file will not open or is not the version the
+ *                   mod knows, other banks untouched; and, when
+ *                   QSA_SPEECH_BNK names the game's Speech.bnk (extracted from
+ *                   its paks; not shipped here), the changed copy loaded and
+ *                   written to build\dialogue_patched.bnk for
+ *                   tools\check_dialogue_bank.py
+ *     dialoguegame  no Dialogue setting: the game's own dialogue, nothing read
  *
  * Every scenario also checks the X3DAudio pass-through, the decision table
  * and the patch verification. */
@@ -40,6 +48,19 @@ extern int fw_initialized, fw_pan, fw_setpan_calls, fw_replace_calls, fw_getdevi
 extern uint32_t fw_speaker_cfg, fw_replace_settings[4], fw_setbusfx_args[3];
 extern uint64_t fw_replace_id;
 extern WCHAR fw_getdevid_endpoint[128];
+extern const unsigned char *fw_file_data;
+extern size_t fw_file_size;
+extern int fw_stream_fail, fw_open_calls, fw_open_lang_first, fw_streams_open, fw_unaligned_reads;
+extern int fw_lbw_calls, fw_lba_calls, fw_lbcopy_calls;
+extern unsigned char *fw_lbcopy_data;
+extern uint32_t fw_lbcopy_size;
+
+static uint32_t ak_hash(const char *s)
+{
+    uint32_t h = 2166136261u;
+    for (; *s; s++) { unsigned char c = (unsigned char)*s; if (c >= 'A' && c <= 'Z') c += 32; h = h * 16777619u ^ c; }
+    return h;
+}
 
 static int fails;
 #define CHECK(cond, ...) do { if (cond) printf("  ok   "); else { printf("  FAIL "); fails++; } \
@@ -148,16 +169,18 @@ int main(int argc, char **argv)
     char ini[MAX_PATH + 32];
     snprintf(ini, sizeof ini, "%sQuarryEssentialAudio.ini", dir);
     FILE *f = fopen(ini, "w");
+    BOOL dlg = !strcmp(mode, "dialogue") || !strcmp(mode, "dialoguegame");
     const char *out = !strcmp(mode, "layout51") || !strcmp(mode, "layout51no") ? "5.1"
-                    : !strcmp(mode, "device") || !strcmp(mode, "nodevice") || !strcmp(mode, "nocomp") ? "auto" : mode;
+                    : !strcmp(mode, "device") || !strcmp(mode, "nodevice") || !strcmp(mode, "nocomp") || dlg ? "auto" : mode;
     fprintf(f, "[Audio]\nOutput=%s\n", out);
+    if (!strcmp(mode, "dialogue")) fprintf(f, "Dialogue=positional\n");
     if (!strcmp(mode, "nocomp")) fprintf(f, "Compression=off\n");
     if (!strcmp(mode, "device")) fprintf(f, "Device=%s\n", other_name);
     if (!strcmp(mode, "nodevice")) fprintf(f, "Device=zz no such device zz\n");
     fclose(f);
     SetEnvironmentVariableA("QSA_TEST_TARGET71", "1");
     if (!strcmp(mode, "auto") || !strcmp(mode, "headphones") || !strcmp(mode, "device") || !strcmp(mode, "nodevice") ||
-        !strcmp(mode, "nocomp"))
+        !strcmp(mode, "nocomp") || dlg)
         SetEnvironmentVariableA("QSA_TEST_NOSPATIAL", "1");
     if (!strcmp(mode, "layout51no")) SetEnvironmentVariableA("QSA_TEST_REFUSE", "1");
 
@@ -340,6 +363,72 @@ int main(int argc, char **argv)
               fw_replace_settings[3] == 0,
               "ReplaceOutput({0, %u, %u, 0x%x}) on the main output", fw_replace_settings[1], fw_replace_settings[2],
               fw_replace_settings[3]);
+    } else if (!strcmp(mode, "dialogue") || !strcmp(mode, "dialoguegame")) {
+        HMODULE me = GetModuleHandleA(NULL);
+        int (*lbw)(const wchar_t *, uint32_t *) = (void *)GetProcAddress(me, "?LoadBank@SoundEngine@AK@@YA?AW4AKRESULT@@PEB_WAEAI@Z");
+        int (*lba)(const char *, uint32_t *) = (void *)GetProcAddress(me, "?LoadBank@SoundEngine@AK@@YA?AW4AKRESULT@@PEBDAEAI@Z");
+        uint32_t id = 0;
+        /* A made-up dialogue bank: right header and id, one attenuation with
+         * a real id but other contents -- what a game update would look like. */
+        static unsigned char synth[64];
+        uint32_t v;
+        memcpy(synth, "BKHD", 4); v = 8; memcpy(synth + 4, &v, 4); v = 140; memcpy(synth + 8, &v, 4);
+        v = ak_hash("Speech"); memcpy(synth + 12, &v, 4);
+        memcpy(synth + 16, "HIRC", 4); v = 4 + 5 + 20; memcpy(synth + 20, &v, 4); v = 1; memcpy(synth + 24, &v, 4);
+        synth[28] = 0x0E; v = 20; memcpy(synth + 29, &v, 4); v = 863852533u; memcpy(synth + 33, &v, 4);
+        size_t synth_n = 33 + 20;
+
+        if (!strcmp(mode, "dialoguegame")) {
+            fw_file_data = synth; fw_file_size = synth_n;
+            int r = lbw(L"Speech", &id);
+            CHECK(log_has(dir, "Dialogue: game.") && r == 1 && fw_lbw_calls == 1 && !fw_open_calls && !fw_lbcopy_calls,
+                  "the default is the game's own dialogue: loaded as the game does, nothing read");
+        } else {
+            CHECK(log_has(dir, "Dialogue: positional.") &&
+                  log_has(dir, "Dialogue: spread 30% close, 5% from 3 m; 6 dB quieter per doubling of distance from 2 m, "
+                               "at most 12 dB; muffling from 2 m, 35 at 20 m."),
+                  "setting read; the defaults reported");
+            fw_file_data = synth; fw_file_size = synth_n;
+            int r = lbw(L"Speech", &id);
+            CHECK(r == 1 && id == ak_hash("Speech") && fw_lbw_calls == 1 && !fw_lbcopy_calls &&
+                  log_has(dir, "Dialogue NOT changed: this version of the game's dialogue is not the one this mod knows. "
+                               "The game's own dialogue is used."),
+                  "another version of the dialogue: the game's own load, logged");
+            CHECK(fw_open_lang_first == 1 && !fw_streams_open && !fw_unaligned_reads,
+                  "read as Wwise's bank reader does: language-specific first, whole blocks, the stream closed");
+            fw_stream_fail = 1;
+            r = lbw(L"Speech", &id);
+            CHECK(r == 1 && fw_lbw_calls == 2 && !fw_lbcopy_calls && log_has(dir, "could not open the game's dialogue file"),
+                  "the file will not open: the game's own load, logged");
+            r = lba("Speech", &id);
+            CHECK(r == 1 && fw_lba_calls == 1 && !fw_lbcopy_calls, "the same through LoadBank by narrow name");
+            fw_stream_fail = 0;
+            int opens = fw_open_calls;
+            r = lbw(L"Init", &id);
+            CHECK(r == 1 && id == ak_hash("Init") && fw_lbw_calls == 3 && fw_open_calls == opens,
+                  "any other bank: the game's own load, nothing read");
+
+            char real[MAX_PATH];
+            if (GetEnvironmentVariableA("QSA_SPEECH_BNK", real, MAX_PATH)) {
+                static unsigned char bank[4 << 20];
+                FILE *bf = fopen(real, "rb");
+                size_t n = bf ? fread(bank, 1, sizeof bank, bf) : 0;
+                if (bf) fclose(bf);
+                fw_file_data = bank; fw_file_size = n;
+                int calls = fw_lbw_calls;
+                id = 0;
+                r = n ? lbw(L"Speech", &id) : -1;
+                CHECK(r == 1 && id == ak_hash("Speech") && fw_lbw_calls == calls && fw_lbcopy_calls == 1 &&
+                      fw_lbcopy_size > n && !fw_streams_open &&
+                      log_has(dir, "Positional dialogue applied: 32 of 32 distance settings changed."),
+                      "the game's own Speech.bnk: changed copy loaded instead (%u -> %u bytes)", (unsigned)n, fw_lbcopy_size);
+                FILE *pf = fopen("build\\dialogue_patched.bnk", "wb");
+                if (pf && fw_lbcopy_data) fwrite(fw_lbcopy_data, 1, fw_lbcopy_size, pf);
+                if (pf) fclose(pf);
+            } else {
+                printf("  NOT EXERCISED: the game's own dialogue (set QSA_SPEECH_BNK to an extracted Speech.bnk)\n");
+            }
+        }
     } else if (!strcmp(mode, "nodevice")) {
         CHECK(log_has(dir, "No output device matches the Device setting. Available devices:") &&
               log_has(dir, "Using the Windows default device:"), "devices listed, default used");

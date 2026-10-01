@@ -6,3 +6,7 @@ EXPORTS
     "?GetPanningRule@SoundEngine@AK@@YA?AW4AKRESULT@@AEAW4AkPanningRule@@_K@Z" = fw_GetPanningRule
     "?SetPanningRule@SoundEngine@AK@@YA?AW4AKRESULT@@W4AkPanningRule@@_K@Z" = fw_SetPanningRule
     "?ReplaceOutput@SoundEngine@AK@@YA?AW4AKRESULT@@AEBUAkOutputSettings@@_KPEA_K@Z" = fw_ReplaceOutput
+    "?LoadBank@SoundEngine@AK@@YA?AW4AKRESULT@@PEB_WAEAI@Z" = fw_LoadBankW
+    "?LoadBank@SoundEngine@AK@@YA?AW4AKRESULT@@PEBDAEAI@Z" = fw_LoadBankA
+    "?LoadBankMemoryCopy@SoundEngine@AK@@YA?AW4AKRESULT@@PEBXIAEAI@Z" = fw_LoadBankMemoryCopy
+    "?m_pStreamMgr@IAkStreamMgr@AK@@1PEAV12@EA" = fw_stream_mgr_ptr DATA

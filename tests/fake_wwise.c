@@ -80,3 +80,93 @@ __attribute__((noinline)) int fw_SetPanningRule(int rule, uint64_t dev)
     fw_pan = rule;
     return 1;
 }
+
+/* For Dialogue=positional: a stream manager that serves one file from memory,
+ * laid out as the vtable slots read off the game's bank reader (see
+ * src/dialogue.c); LoadBank by wide and narrow name (the game's own path,
+ * which the mod must fall back to); and LoadBankMemoryCopy (the changed
+ * path). Each records what it was given. */
+#include <stdlib.h>
+#include <string.h>
+#include <wchar.h>
+
+static uint32_t fw_hash(const char *s)
+{
+    uint32_t h = 2166136261u;
+    for (; *s; s++) { unsigned char c = (unsigned char)*s; if (c >= 'A' && c <= 'Z') c += 32; h = h * 16777619u ^ c; }
+    return h;
+}
+
+const unsigned char *fw_file_data;
+size_t fw_file_size;
+int fw_stream_fail, fw_open_calls, fw_open_lang_first = -1, fw_streams_open, fw_unaligned_reads;
+int fw_lbw_calls, fw_lba_calls, fw_lbcopy_calls;
+unsigned char *fw_lbcopy_data;
+uint32_t fw_lbcopy_size;
+
+typedef struct { void **vt; size_t pos; } fw_stream;
+static void fw_st_nop(fw_stream *s) { (void)s; }
+static void fw_st_destroy(fw_stream *s) { fw_streams_open--; free(s); }
+static uint32_t fw_st_block(fw_stream *s) { (void)s; return 2048; }
+static int fw_st_read(fw_stream *s, void *buf, uint32_t size, unsigned char wait, signed char prio, float dl, uint32_t *got)
+{
+    (void)wait; (void)prio; (void)dl;
+    if (size % 2048) fw_unaligned_reads++;
+    size_t left = fw_file_size - s->pos, n = size < left ? size : left;
+    memcpy(buf, fw_file_data + s->pos, n);
+    s->pos += n;
+    *got = (uint32_t)n;
+    return 1;
+}
+static int fw_st_wait(fw_stream *s) { (void)s; return 1; }
+static void *fw_stream_vt[14] = {
+    (void *)fw_st_nop, (void *)fw_st_destroy, (void *)fw_st_nop, (void *)fw_st_nop, (void *)fw_st_nop,
+    (void *)fw_st_block, (void *)fw_st_read, (void *)fw_st_nop, (void *)fw_st_nop, (void *)fw_st_nop,
+    (void *)fw_st_nop, (void *)fw_st_nop, (void *)fw_st_nop, (void *)fw_st_wait,
+};
+
+typedef struct { uint32_t company, codec, custom_size; void *custom; unsigned char lang, automatic; uint32_t cache; } fw_flags;
+static int fw_mgr_nop(void *m) { (void)m; return 2; }
+static int fw_mgr_create_name(void *m, const wchar_t *name, fw_flags *fl, int mode, fw_stream **out, unsigned char sync)
+{
+    (void)m; (void)sync;
+    if (!fw_open_calls) fw_open_lang_first = fl ? fl->lang : -1;
+    fw_open_calls++;
+    if (fw_stream_fail || mode != 0 || !fw_file_data || wcscmp(name, L"Speech.bnk")) return 2;
+    fw_stream *s = calloc(1, sizeof *s);
+    s->vt = fw_stream_vt;
+    fw_streams_open++;
+    *out = s;
+    return 1;
+}
+static void *fw_mgr_vt[6] = { (void *)fw_mgr_nop, (void *)fw_mgr_nop, (void *)fw_mgr_nop,
+                              (void *)fw_mgr_nop, (void *)fw_mgr_create_name, (void *)fw_mgr_nop };
+static struct { void **vt; } fw_mgr = { fw_mgr_vt };
+void *fw_stream_mgr_ptr = &fw_mgr;
+
+__attribute__((noinline)) int fw_LoadBankW(const wchar_t *n, uint32_t *out)
+{
+    char a[64];
+    int i = 0;
+    for (; n && n[i] && i < 63; i++) a[i] = (char)n[i];
+    a[i] = 0;
+    fw_lbw_calls++;
+    *out = fw_hash(a);
+    return 1;
+}
+__attribute__((noinline)) int fw_LoadBankA(const char *n, uint32_t *out)
+{
+    fw_lba_calls++;
+    *out = fw_hash(n);
+    return 1;
+}
+__attribute__((noinline)) int fw_LoadBankMemoryCopy(const void *p, uint32_t size, uint32_t *out)
+{
+    fw_lbcopy_calls++;
+    free(fw_lbcopy_data);
+    fw_lbcopy_data = malloc(size);
+    memcpy(fw_lbcopy_data, p, size);
+    fw_lbcopy_size = size;
+    memcpy(out, (const unsigned char *)p + 12, 4);
+    return 1;
+}

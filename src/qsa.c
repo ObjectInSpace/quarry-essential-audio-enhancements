@@ -23,6 +23,10 @@
  * The gate is one conditional jump; when spatial output is wanted and
  * available, it is turned into two NOPs after all 18 surrounding bytes are
  * verified.
+ *
+ * Dialogue=positional rewrites the distance settings of the game's dialogue
+ * as it loads, so each voice comes from its character relative to the
+ * camera and gets quieter and muffled with distance (dialogue.c).
  */
 #define COBJMACROS
 #include <initguid.h>
@@ -36,7 +40,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#define QSA_VERSION "1.1.0"
+#define QSA_VERSION "1.2.0"
 
 static HMODULE g_self, g_game;
 static WCHAR g_dir[MAX_PATH];
@@ -500,6 +504,9 @@ static void wwise_followup(BOOL headphone_pan, BOOL mono, uint32_t wwise_dev, BO
     }
 }
 
+/* ---- positional dialogue ---- */
+#include "dialogue.c"
+
 /* ---- startup ---- */
 static volatile LONG g_setup_done;
 
@@ -568,6 +575,9 @@ typedef uint32_t (*pfn_getdevid)(IMMDevice *);   /* AK::GetDeviceID(IMMDevice*) 
 
 static void worker_body(void)
 {
+    /* First: the game loads its sound banks seconds later, and the dialogue
+     * hook must be in place before it does. */
+    dialogue_setup();
     plan_t p = { FALSE, 0, 0, FALSE, FALSE, "unchanged" };
     char raw[32], devu[512];
     layout_t layout;
@@ -577,8 +587,10 @@ static void worker_body(void)
     WideCharToMultiByte(CP_UTF8, 0, want, -1, devu, sizeof devu, NULL, NULL);
     char rawc[16];
     BOOL no_compression = read_compression_off(rawc, sizeof rawc);
-    qlog("Essential Audio Enhancements for The Quarry %s. Output: %s. Device: %s. Compression: %s.", QSA_VERSION, raw,
-         want[0] ? devu : "Windows default", no_compression ? "off" : "on");
+    qlog("Essential Audio Enhancements for The Quarry %s. Output: %s. Device: %s. Compression: %s. Dialogue: %s.",
+         QSA_VERSION, raw, want[0] ? devu : "Windows default", no_compression ? "off" : "on",
+         g_dlg.positional ? "positional" : "game");
+    dialogue_report();
 
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) { qlog("Could not start COM; doing nothing."); return; }

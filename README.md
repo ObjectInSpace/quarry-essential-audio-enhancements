@@ -16,6 +16,11 @@ What the game does on its own:
   HDMI and set up as 5.1 or 7.1, it very likely outputs channel surround
   already, because its sound engine follows the device's hardware layout.
   (Not tested with such a device.)
+- Dialogue is placed on the speaking character, but every voice is spread
+  over most of the space around you (75% close up, all of it further away)
+  and is no quieter far away than close up. So you cannot tell where a voice
+  comes from or how far away it is. (Read from the game's sound data, and
+  measured in game.)
 
 With this mod:
 
@@ -30,8 +35,10 @@ With this mod:
 - **On plain stereo headphones or speakers,** nothing changes unless you ask
   for headphone panning or mono.
 
-It also offers mono output and a choice of output device, and it works
-alongside other mods, including UE4SS-based ones.
+It also offers **positional dialogue** (each voice comes from its character,
+as seen from the camera, and gets quieter and more muffled with distance),
+mono output and a choice of output device, and it works alongside other mods,
+including UE4SS-based ones.
 
 ## Requirements
 
@@ -55,7 +62,7 @@ alongside other mods, including UE4SS-based ones.
 
 Open `QuarryEssentialAudio.ini` in a text editor. Restart the game after changing it.
 
-There are three settings.
+There are four settings.
 
 `Output=` sets how the game's sound is laid out:
 
@@ -99,6 +106,35 @@ device matches, the log lists the
 names of the available devices. The game may start on the default device for
 a moment before it switches.
 
+`Dialogue=` is `game` (the default) or `positional`.
+
+- `game` — dialogue as the game has it: wide and central, the same volume at
+  any distance.
+- `positional` — each voice comes from its character, as seen from the
+  camera, so a character on the left of the shot is heard on the left. Voices
+  also get quieter and more muffled the further the camera is from the
+  speaker. The game's dialogue mostly plays in scenes where it controls the
+  camera, and its cuts often jump to the other side of a conversation, so a
+  voice changes sides when the shot does. The game's reverb is left as it
+  is, so a distant voice also sounds more reverberant. Phone calls and other
+  voices the game does not place in the scene are not changed.
+
+With `positional`, ten more settings shape the sound; the file explains each
+one, and distances are in metres:
+
+- `DialogueSpreadNear`, `DialogueSpreadFar`, `DialogueSpreadFarAt` — how wide
+  a voice sounds, from 0 (a single point) to 100 (all around you): 30 right
+  next to the speaker, narrowing to 5 from 3 metres on. The game uses 75
+  close up, rising to 100.
+- `DialogueFalloffStart`, `DialogueFalloffPerDoubling`, `DialogueFalloffMax` —
+  volume: no change within 2 metres, then 6 dB quieter each time the distance
+  doubles, never more than 12 dB quieter.
+- `DialogueMuffleStart`, `DialogueMuffleFullAt`, `DialogueMuffleMax` —
+  muffling, from 0 (none) to 100 (most): none within 2 metres, rising to 35
+  at 20 metres. The game's own muffled voices use 35.
+- `DialogueMaxDistance` — where all three stop changing: 20 metres, as in the
+  game's own settings.
+
 ## Headphones without Dolby Atmos
 
 You do not need Dolby Atmos to hear the game in 3D on ordinary headphones.
@@ -126,7 +162,11 @@ It is a few lines of plain text:
 - whether spatial sound was enabled in the game's sound engine;
 - what the game's sound engine (Wwise) ended up mixing to, read back from the
   engine itself — for example `Wwise is mixing to: 7.1.4.` in spatial mode or
-  `7.1.` in surround mode.
+  `7.1.` in surround mode;
+- with `Dialogue=positional`, the settings in use and, once the game loads
+  its dialogue, `Positional dialogue applied: 32 of 32 distance settings
+  changed.` — or, if anything was not as expected, `Dialogue NOT changed:`
+  with the reason, and the game's own dialogue is used.
 
 ## Uninstalling
 
@@ -141,6 +181,10 @@ happens in memory while the game runs.
 - A game update may change the code the spatial switch depends on. The mod
   checks the exact bytes first; if they differ, it leaves the game alone,
   says so in the log, and surround still works.
+- The same goes for the dialogue: each distance setting the mod changes is
+  checked against a fingerprint of the version it was made for. Any that
+  differ are left as the game has them; if none match, the game's own
+  dialogue is used and the log says so.
 
 ## How it works
 
@@ -181,6 +225,19 @@ For modders and the curious.
   calls Wwise's exported `SetBusEffect` to empty the compressor's slot on that
   bus. Measured in the game, Wwise terminates the compressor within 80 ms of
   the request, and it stays gone for the session.
+- **Positional dialogue.** The game's dialogue sound bank (`Speech.bnk`)
+  already places each voice on its character, with the listener on the
+  camera; what blurs it is the distance settings ("attenuations") those
+  voices use. The game loads the bank by name, so Wwise reads the file
+  itself. The mod hooks that one call (with MinHook), reads the same file
+  through Wwise's own file reader, so it gets exactly what the game would
+  load, and changes the 32 attenuations used by positioned voices: for each,
+  it adds a volume curve, a spread curve and a low-pass (muffling) curve
+  and points the attenuation at them, keeping every original curve and the
+  reverb sends as they were. It then loads that copy with Wwise's
+  `LoadBankMemoryCopy`. Nothing on disk changes. Each attenuation is
+  matched to a fingerprint first, and anything unexpected falls back to the
+  game's own load. With `Dialogue=game`, nothing is hooked.
 - **Reading the result back.** The game exports Wwise's API by name; the mod
   calls `GetSpeakerConfiguration` to log what Wwise is actually mixing to,
   and `SetPanningRule` for the headphones option.
@@ -199,12 +256,28 @@ output decision, the byte check before the spatial patch (including refusing
 a one-byte difference), that only the game's own device-format reads are
 changed, a speaker layout set by hand (both accepted and refused by Windows),
 mono, headphone panning, the device choice (using another active output on
-the test machine, and a name that matches nothing), and removing the master
-compressor.
+the test machine, and a name that matches nothing), removing the master
+compressor, and positional dialogue: falling back to the game's own load when
+the dialogue file will not open or is not the version the mod knows, leaving
+other sound banks alone, and doing nothing at all with `Dialogue=game`.
+
+The repository does not include the game's files, so one dialogue test needs
+the game's own `Speech.bnk`, extracted from its packages. Set `QSA_SPEECH_BNK`
+to its path and the test loads the changed copy, and
+`tools\check_dialogue_bank.py` then checks that copy on its own terms: every
+other part of the bank unchanged, the new curves where they should be, and
+their values on the same scale as the game's own. Set `QSA_WWISER` to
+`wwiser.pyz` to have that independent bank parser read it too. Without
+`QSA_SPEECH_BNK` the test says it was not exercised. After a game update that
+changes the dialogue, `tools\dialogue_table.py` rebuilds the list of
+attenuations and their fingerprints.
 
 ## License
 
 GPL-3.0-or-later. See `LICENSE`.
+
+Includes MinHook by Tsuda Kageyu (BSD 2-Clause), in `third_party\minhook`
+with its own `LICENSE.txt`.
 
 This is an unofficial, fan-made mod. It is not affiliated with, endorsed by or
 supported by Supermassive Games, 2K or Microsoft. The Quarry is a trademark of
